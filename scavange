@@ -1,0 +1,279 @@
+// ==UserScript==
+// @name         Tribal Wars - Auto Scavenge
+// @namespace    http://tampermonkey.net/
+// @version      3.0
+// @description  Execute scavenge bookmark script + click Iniciar for each slot, then reschedule
+// @author       You
+// @match        https://es100.guerrastribales.es/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ─── CONFIGURATION ───────────────────────────────────────────────────────────
+    // How many scavenge slots to start (right → left)
+    const SLOTS_TO_CLICK = 4;
+
+    // Delay between running the script and clicking Iniciar for that slot (ms)
+    const KEY_TO_CLICK_DELAY_MS = 3000;
+
+    // Delay between finishing one slot and starting the next (ms)
+    const BETWEEN_SLOTS_DELAY_MS = 4000;
+
+    // Extra random buffer added on top of the longest timer before re-running
+    const EXTRA_DELAY_MIN_MS = 60_000;   // 1 minute
+    const EXTRA_DELAY_MAX_MS = 180_000;  // 3 minutes
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // ── Guard: only run on plain scavenge, never on scavenge_mass ────────────────
+    const params = new URLSearchParams(location.search);
+    const mode   = params.get('mode') ?? '';
+
+    if (mode !== 'scavenge') return;
+
+    log('Script loaded on scavenge page.');
+
+    // Build the reload URL dynamically from the current page's village parameter
+    function getScavengeUrl() {
+        const village = new URLSearchParams(location.search).get('village') ?? '';
+        return `game.php?village=${encodeURIComponent(village)}&screen=place&mode=scavenge`;
+    }
+
+    // Give the page a moment to fully render, then start
+    setTimeout(run, 1500);
+
+    // ── Main flow ─────────────────────────────────────────────────────────────────
+
+    function run() {
+        log('Starting scavenge cycle…');
+
+        if (isAnyCollectionActive()) {
+            const activeTimerMs = getLongestActiveTimerMs();
+            log(`Collection already running. Longest timer: ${msToHMS(activeTimerMs)}. Skipping launches and scheduling next run.`);
+            scheduleNextRun();
+            return;
+        }
+
+        log('No active collections found. Starting slots…');
+        processSlot(0);
+    }
+
+    // Returns true only if at least one slot card contains "Recolectando recursos"
+    function isAnyCollectionActive() {
+        return [...document.querySelectorAll('*')].some(el =>
+            el.children.length < 20 &&
+            el.textContent.includes('Recolectando recursos')
+        );
+    }
+
+    function runScavengeScript() {
+        var settings = {
+            max_ressources: '99999',
+            archers: '0',
+            skip_level_1: '0'
+        };
+        var settings_spear = {
+            untouchable: '0',
+            max_unit_number: '9999',
+            conditional_safeguard: '0'
+        };
+        var settings_sword = {
+            untouchable: '0',
+            max_unit_number: '9999',
+            conditional_safeguard: '0'
+        };
+        var settings_axe = {
+            untouchable: '0',
+            max_unit_number: '9999',
+            conditional_safeguard: '0'
+        };
+        var settings_archer = {
+            untouchable: '0',
+            max_unit_number: '9999',
+            conditional_safeguard: '0'
+        };
+        var settings_light = {
+            untouchable: '0',
+            max_unit_number: '0',
+            conditional_safeguard: '0'
+        };
+        var settings_marcher = {
+            untouchable: '0',
+            max_unit_number: '9999',
+            conditional_safeguard: '0'
+        };
+        var settings_heavy = {
+            untouchable: '0',
+            max_unit_number: '1',
+            conditional_safeguard: '0'
+        };
+        $.getScript('https://media.innogamescdn.com/com_DS_PL/skrypty/Asystent_Zbieracza.js');
+    }
+
+    /**
+     * For each slot index (0, 1, 2 ...):
+     *   1. Run the scavenge script
+     *   2. Wait KEY_TO_CLICK_DELAY_MS
+     *   3. Click the rightmost available Iniciar button
+     *   4. Wait BETWEEN_SLOTS_DELAY_MS, then process next slot
+     */
+    function processSlot(slotIndex) {
+        if (slotIndex >= SLOTS_TO_CLICK) {
+            log('All slots processed. Scheduling next run…');
+            setTimeout(scheduleNextRun, 2000);
+            return;
+        }
+
+        log(`--- Slot ${slotIndex + 1} of ${SLOTS_TO_CLICK} ---`);
+
+        // Step: run the scavenge script
+        runScavengeScript();
+        log('Scavenge script executed.');
+
+        // Step: after short delay, click the rightmost available Iniciar
+        setTimeout(() => {
+            const btn = getRightmostIniciarButton();
+
+            if (!btn) {
+                log(`No Iniciar button found for slot ${slotIndex + 1}. Moving on.`);
+                processSlot(slotIndex + 1);
+                return;
+            }
+
+            btn.click();
+            log(`Clicked Iniciar for slot ${slotIndex + 1}.`);
+
+            // Move to next slot after a delay
+            setTimeout(() => processSlot(slotIndex + 1), BETWEEN_SLOTS_DELAY_MS);
+
+        }, KEY_TO_CLICK_DELAY_MS);
+    }
+
+    // ── Get rightmost available Iniciar button ────────────────────────────────────
+
+    function getRightmostIniciarButton() {
+        const allButtons = [...document.querySelectorAll('button, input[type=button], a.btn')]
+            .filter(b => {
+                const text = (b.textContent || b.value || '').trim();
+                return /iniciar/i.test(text) && !b.disabled && b.offsetParent !== null;
+            });
+
+        if (allButtons.length === 0) return null;
+
+        // Sort by horizontal position, rightmost = highest left offset
+        allButtons.sort((a, b) => {
+            const aRect = a.getBoundingClientRect();
+            const bRect = b.getBoundingClientRect();
+            return bRect.left - aRect.left; // descending: rightmost first
+        });
+
+        return allButtons[0];
+    }
+
+    // ── Schedule next cycle ───────────────────────────────────────────────────────
+
+    function scheduleNextRun() {
+        const maxTimerMs = getLongestActiveTimerMs();
+
+        if (maxTimerMs === null) {
+            log('Could not read any active timer – retrying in 5 min as fallback.');
+            scheduleReload(5 * 60_000);
+            return;
+        }
+
+        const extraMs = randomBetween(EXTRA_DELAY_MIN_MS, EXTRA_DELAY_MAX_MS);
+        const totalMs = maxTimerMs + extraMs;
+
+        log(`Longest active timer: ${msToHMS(maxTimerMs)}. Buffer: ${msToHMS(extraMs)}. Next run in: ${msToHMS(totalMs)}.`);
+
+        showCountdownOverlay(totalMs);
+        scheduleReload(totalMs);
+    }
+
+    function scheduleReload(delayMs) {
+        setTimeout(() => {
+            log('Reloading scavenge page…');
+            location.href = `https://es100.guerrastribales.es/${getScavengeUrl()}`;
+        }, delayMs);
+    }
+
+    // ── Timer reader ──────────────────────────────────────────────────────────────
+
+    function getLongestActiveTimerMs() {
+        const allEls = [...document.querySelectorAll('*')];
+        const activeCards = allEls.filter(el =>
+            el.children.length < 20 &&
+            el.textContent.includes('Recolectando recursos')
+        );
+
+        let longest = null;
+
+        activeCards.forEach(card => {
+            const timeMatch = card.innerHTML.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+            if (timeMatch) {
+                const ms = hmsToMs(+timeMatch[1], +timeMatch[2], +timeMatch[3]);
+                if (longest === null || ms > longest) longest = ms;
+            }
+        });
+
+        return longest;
+    }
+
+    // ── On-screen countdown overlay ───────────────────────────────────────────────
+
+    function showCountdownOverlay(totalMs) {
+        const old = document.getElementById('tw-scavenge-overlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'tw-scavenge-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(20, 10, 0, 0.88);
+            color: #f5dfa0;
+            border: 2px solid #8b6914;
+            border-radius: 8px;
+            padding: 12px 18px;
+            font-family: monospace;
+            font-size: 14px;
+            z-index: 99999;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            min-width: 220px;
+        `;
+
+        const deadline = Date.now() + totalMs;
+
+        function tick() {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+                overlay.innerHTML = '⚔️ <b>Scavenge Auto</b><br>Reloading…';
+                return;
+            }
+            overlay.innerHTML = `⚔️ <b>Scavenge Auto</b><br>Next round in: <b>${msToHMS(remaining)}</b>`;
+            setTimeout(tick, 1000);
+        }
+
+        tick();
+        document.body.appendChild(overlay);
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────────
+
+    function hmsToMs(h, m, s) { return ((h * 3600) + (m * 60) + s) * 1000; }
+
+    function msToHMS(ms) {
+        const total = Math.max(0, Math.floor(ms / 1000));
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    function log(msg) { console.log(`[TW-Scavenge] ${msg}`); }
+
+})();
