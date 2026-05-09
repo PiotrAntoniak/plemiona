@@ -432,7 +432,7 @@ window.FarmGod.Main = (function (Library, Translation) {
   };
 
   // FIX: human-like randomized delay — more natural than a fixed 250ms interval
-  const humanDelay = () => 200 + Math.floor(Math.random() * 200); // 200–400ms
+  const humanDelay = () => 250 + Math.floor(Math.random() * 100); // 200–400ms
 
   // FIX: processAutoSendQueue no longer self-schedules after sendFarm.
   // Instead it passes an onDone callback into sendFarm, so the next send only
@@ -516,12 +516,28 @@ window.FarmGod.Main = (function (Library, Translation) {
     html += `<tr><th style="text-align:center;">${t.table.origin}</th><th style="text-align:center;">${t.table.target}</th><th style="text-align:center;">${t.table.fields}</th><th style="text-align:center;">${t.table.farm}</th></tr>`;
 
     if (!$.isEmptyObject(plan)) {
-      for (let prop in plan) {
+      // 1. Convert the plan object into an array of village groups
+      let sortedVillages = Object.keys(plan).map(key => {
+        return {
+          coord: key,
+          name: plan[key][0].origin.name, // Get name from the first farm entry
+          farms: plan[key]
+        };
+      });
+
+      // 2. Sort the array alphabetically by village name
+      sortedVillages.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}));
+
+      // 3. Loop through the sorted array instead of the raw object
+      sortedVillages.forEach((villageGroup) => {
+        let prop = villageGroup.coord;
+        let farms = villageGroup.farms;
+
         if (game_data.market == 'nl') {
-          html += `<tr><td colspan="4" style="background: #e7d098;"><input type="button" class="btn switchVillage" data-id="${plan[prop][0].origin.id}" value="${t.table.goTo} ${plan[prop][0].origin.name} (${plan[prop][0].origin.coord})" style="float:right;"></td></tr>`;
+          html += `<tr><td colspan="4" style="background: #e7d098;"><input type="button" class="btn switchVillage" data-id="${farms[0].origin.id}" value="${t.table.goTo} ${farms[0].origin.name} (${farms[0].origin.coord})" style="float:right;"></td></tr>`;
         }
 
-        plan[prop].forEach((val, i) => {
+        farms.forEach((val, i) => {
           html += `<tr class="farmRow row_${(i % 2 == 0) ? 'a' : 'b'}">
                     <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${val.origin.id}">${val.origin.name} (${val.origin.coord})</a></td>
                     <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${val.target.id}">${val.target.coord}</a></td>
@@ -529,7 +545,7 @@ window.FarmGod.Main = (function (Library, Translation) {
                     <td style="text-align:center;"><a href="#" data-origin="${val.origin.id}" data-target="${val.target.id}" data-template="${val.template.id}" class="farmGod_icon farm_icon farm_icon_${val.template.name}" style="margin:auto;"></a></td>
                   </tr>`;
         });
-      }
+      });
     } else {
       html += `<tr><td colspan="4" style="text-align: center;">${t.table.noFarmsPlanned}</td></tr>`;
     }
