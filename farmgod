@@ -1,0 +1,160 @@
+// ==UserScript==
+// @name         Tribal Wars - Auto Farm (FarmGod)
+// @namespace    http://tampermonkey.net/
+// @version      5.0
+// @description  Every ~1 hour: run farma slajni script, Plan farms, Auto-Send All Farms
+// @author       You
+// @match        https://es100.guerrastribales.es/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ─── CONFIGURATION ───────────────────────────────────────────────────────────
+    const BASE_INTERVAL_MS      = 60 * 60_000;  // 1 hour
+    const JITTER_MIN_MS         = -5 * 60_000;  // −5 minutes
+    const JITTER_MAX_MS         =  5 * 60_000;  // +5 minutes
+
+    const AFTER_SCRIPT_DELAY_MS = 10_000;  // wait after $.getScript before clicking Plan farms
+    const AUTOSEND_POLL_MS      = 15_000;  // check every 15s for Auto-Send button
+    const AUTOSEND_MAX_TRIES    = 4;       // check 4 times (first check after 15s, last at 60s)
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // ── Guard: only run on am_farm screen ────────────────────────────────────────
+    const screen = new URLSearchParams(location.search).get('screen') ?? '';
+    if (screen !== 'am_farm') return;
+
+    log('Script loaded on farm page.');
+    setTimeout(run, 1500);
+
+    // ── Main flow ─────────────────────────────────────────────────────────────────
+
+    function run() {
+        // Step 1: execute the bookmark script
+        log('Executing farma slajni script…');
+        $.getScript('https://cdn.jsdelivr.net/gh/PiotrAntoniak/plemiona@main/script.js');
+
+        // Step 2: wait 10s, then click Plan farms
+        setTimeout(() => {
+            const planBtn = findButton(/plan\s*farms/i);
+            if (!planBtn) {
+                log('"Plan farms" not found after 10s – retrying whole cycle in 2 min.');
+                setTimeout(run, 2 * 60_000);
+                return;
+            }
+            planBtn.click();
+            log('Clicked "Plan farms".');
+
+            // Step 3: wait 15s then check up to 4 times for Auto-Send All Farms
+            pollForAutoSend(1);
+
+        }, AFTER_SCRIPT_DELAY_MS);
+    }
+
+    function pollForAutoSend(attempt) {
+        setTimeout(() => {
+            log(`Checking for "Auto-Send All Farms" (attempt ${attempt}/${AUTOSEND_MAX_TRIES})…`);
+            const sendBtn = findButton(/auto[\-\s]?send\s*all\s*farms/i);
+
+            if (sendBtn) {
+                sendBtn.click();
+                log('Clicked "Auto-Send All Farms". Starting timer.');
+                scheduleNextRun();
+                return;
+            }
+
+            if (attempt < AUTOSEND_MAX_TRIES) {
+                pollForAutoSend(attempt + 1);
+            } else {
+                log('Auto-Send never appeared after 4 attempts. Starting timer anyway; will refresh page when it ends.');
+                scheduleNextRun(true); // refresh on next run instead of re-running
+            }
+        }, AUTOSEND_POLL_MS);
+    }
+
+    // ── Schedule next cycle ───────────────────────────────────────────────────────
+
+    function scheduleNextRun(refreshOnEnd = false) {
+        const jitter  = randomBetween(JITTER_MIN_MS, JITTER_MAX_MS);
+        const totalMs = BASE_INTERVAL_MS + jitter;
+
+        log(`Next run in: ${msToHMS(totalMs)}.`);
+        showCountdownOverlay(totalMs);
+
+        setTimeout(() => {
+            if (refreshOnEnd) {
+                log('Refreshing page…');
+                location.reload();
+            } else {
+                log('Re-running farm cycle…');
+                run();
+            }
+        }, totalMs);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────────
+
+    function findButton(pattern) {
+        return [...document.querySelectorAll('button, input[type=button], input[type=submit], a.btn, a')]
+            .find(b => {
+                const text = (b.textContent || b.value || '').trim();
+                return pattern.test(text) && !b.disabled && b.offsetParent !== null;
+            }) ?? null;
+    }
+
+    // ── On-screen countdown overlay ───────────────────────────────────────────────
+
+    function showCountdownOverlay(totalMs) {
+        const old = document.getElementById('tw-farm-overlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'tw-farm-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(20, 10, 0, 0.88);
+            color: #f5dfa0;
+            border: 2px solid #8b6914;
+            border-radius: 8px;
+            padding: 12px 18px;
+            font-family: monospace;
+            font-size: 14px;
+            z-index: 99999;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            min-width: 240px;
+        `;
+
+        const deadline = Date.now() + totalMs;
+
+        function tick() {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+                overlay.innerHTML = '🌾 <b>Auto Farm</b><br>Reloading…';
+                return;
+            }
+            overlay.innerHTML = `🌾 <b>Auto Farm</b><br>Next run in: <b>${msToHMS(remaining)}</b>`;
+            setTimeout(tick, 1000);
+        }
+
+        tick();
+        document.body.appendChild(overlay);
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────────
+
+    function msToHMS(ms) {
+        const total = Math.max(0, Math.floor(Math.abs(ms) / 1000));
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    function log(msg) { console.log(`[TW-AutoFarm] ${msg}`); }
+
+})();
