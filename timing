@@ -1,0 +1,329 @@
+// ==UserScript==
+// @name         Bot: Timing
+// @namespace    http://tampermonkey.net/
+// @version      1.3
+// @description  try to take over the world!
+// @author       Dominik
+// @match        https://*.guerrastribales.es/game.php?*village=*&screen=place&try=confirm
+// ==/UserScript==
+
+const PingCacheExpiration = 3 * 60 * 1000;
+const PingAvgSamples = 5;
+
+let pinger = {
+    request_image(url) {
+        return new Promise(function(resolve, reject) {
+            var img = new Image();
+            img.onload = function() { resolve(img); };
+            img.onerror = function() { reject(url); };
+            img.src = url + '?random-no-cache=' + Math.floor((1 + Math.random()) * 0x10000).toString(16);
+        });
+    },
+
+    ping(url, multiplier) {
+        return new Promise((resolve, reject) => {
+            var start = (new Date()).getTime();
+            var response = function() {
+                var delta = ((new Date()).getTime() - start);
+                delta *= (multiplier || 1);
+                resolve(delta);
+            };
+            this.request_image(url).then(response).catch(response);
+            setTimeout(function() { reject(Error('Timeout')); }, 5000);
+        });
+    }
+};
+
+let client = {
+    currentPing: 0,
+    worker: null,
+
+    load() {
+        $('#command-data-form').after(`
+            <br>
+            <table class="vis" width="300px" data-item="script-configuration">
+                <tbody>
+                    <tr>
+                        <th colspan="2">Pomocnik</th>
+                    </tr>
+                    <tr>
+                        <td>Data dotarcia</td>
+                        <td>
+                            <input id="s-date" type="text" placeholder="rrrr-mm-dd">
+                            <br>
+                            <div style="margin-top: 3px;">
+                                <button id="set-today" class="btn">Dziś</button>
+                                <button id="reduce-day" class="btn" style="width: 20px;">-</button>
+                                <button id="add-day" class="btn" style="width: 20px;">+</button>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Godzina dotarcia</td>
+                        <td>
+                            <input id="s-time" type="text" placeholder="hh:mm:ss">
+                            <input id="s-milisecond" type="number" min="0" max="999" placeholder="ms">
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="2">
+                            <button id="s-confirm" class="btn">Potwierdź</button>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        `);
+
+        let self = this;
+
+        $('#s-confirm').on('click', function () {
+            if ($(this).hasClass('btn-disabled')) return;
+            $(this).addClass('btn-disabled');
+
+            const offsetAsHours = Math.abs((new Date().getTimezoneOffset()) / 60);
+
+            let target = new Date(
+                "{date}T{time}.{ms}Z"
+                .replace("{date}", $('#s-date').val())
+                .replace("{time}", $('#s-time').val())
+                .replace("{ms}", $('#s-milisecond').val())
+            ).getTime() - (offsetAsHours * 3600 * 1000);
+
+            let travel = $('#command-data-form #date_arrival')
+                .parent()
+                .prev()
+                .find('td')
+                .eq(1)
+                .text()
+                .split(':');
+
+            travel = ((Number(travel[0]) * 3600) + (Number(travel[1]) * 60) + Number(travel[2])) * 1000;
+            target = new Date(target - travel).getTime();
+
+            self.registerWorker(function (e) {
+                const confirmBtnId = self.getSubmitButtonId();
+                const confirmBtnElement = document.querySelector(confirmBtnId);
+
+                if (confirmBtnElement != null && self.isElementVisible(confirmBtnElement)) {
+                    UI.SuccessMessage("Załadowano pomyślnie, znaleziono prawidłowy przycisk potwierdzenia formularza!");
+                } else {
+                    UI.ErrorMessage("Nie znaleziono prawidłowego przycisku! Kończenie pracy");
+                    const scriptConfigElement = document.querySelector('[data-item="script-configuration"]');
+                    if (scriptConfigElement != null) scriptConfigElement.remove();
+                    return;
+                }
+
+                self.worker = e;
+
+                e.postMessage({
+                    command: "initialize",
+                    offset: Timing.offset_to_server,
+                    target: target,
+                    serverTime: Timing.getCurrentServerTime()
+                });
+
+                e.onmessage = function (b) {
+                    if (b.data['command'] === undefined) {
+                        console.error('command not set');
+                        return;
+                    }
+
+                    switch (b.data.command) {
+                        case 'fireBtn': {
+                            confirmBtnElement.click();
+                            self.worker.terminate();
+                            console.log('Fire!');
+                            break;
+                        }
+                        case 'getTime': {
+                            e.postMessage({
+                                command: 'setTime',
+                                serverTime: Timing.getCurrentServerTime()
+                            });
+                            break;
+                        }
+                        case 'getAveragePing': {
+                            self.calcPing(e);
+                            break;
+                        }
+                        case 'debug': {
+                            console.dir(JSON.stringify(b.data));
+                            break;
+                        }
+                    }
+                };
+            });
+        });
+
+        $('#set-today').on('click', () => {
+            let date = new Date();
+            let dateString = new Date(date.getTime() - (date.getTimezoneOffset() * 60000))
+                .toISOString().split("T")[0];
+            $('#s-date').val(dateString);
+        });
+
+        $('#reduce-day').on('click', () => {
+            let current = $('#s-date').val();
+            if (current.length <= 0) return;
+            let date = new Date(current);
+            let dateString = new Date(date.getTime() - (date.getTimezoneOffset() * 60000) - (24 * 3600 * 1000))
+                .toISOString().split("T")[0];
+            $('#s-date').val(dateString);
+        });
+
+        $('#add-day').on('click', () => {
+            let current = $('#s-date').val();
+            if (current.length <= 0) return;
+            let date = new Date(current);
+            let dateString = new Date(date.getTime() - (date.getTimezoneOffset() * 60000) + (24 * 3600 * 1000))
+                .toISOString().split("T")[0];
+            $('#s-date').val(dateString);
+        });
+    },
+
+    registerWorker(callback) {
+        const script = `
+let worker = {
+  load() {
+    this.terminated = false;
+    this.ticks = 0;
+    this.totalDelay = 0;
+    this.serverTime = 0;
+    this.ping = 30;
+    this.waitingForPing = false;
+  },
+
+  run(data) {
+    this.serverTime = data.serverTime;
+    this.lastTick = this.serverTime;
+
+    const asyncEndless = async (callback) => {
+      while (!this.terminated) {
+        await callback();
+      }
+    };
+
+    const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    asyncEndless(async () => {
+      this.updateCurrentServerTime();
+
+      let remaining = (data.target + this.ping - (this.totalDelay / this.ticks)) - this.serverTime;
+      if (remaining <= (this.totalDelay / this.ticks)) {
+        postMessage({
+          command: 'debug',
+          info: remaining,
+          tickLimit: 1000 / (this.totalDelay / this.ticks),
+          ping: this.ping
+        });
+      }
+
+      if (!this.waitingForPing && remaining <= 20 * 1000 && remaining >= 15 * 1000) {
+        this.waitingForPing = true;
+        postMessage({ command: 'getAveragePing' });
+      }
+
+      if (remaining <= 0) {
+        this.terminated = true;
+        this.sendMessage();
+        return;
+      }
+
+      this.ticks++;
+      this.totalDelay += this.serverTime - this.lastTick;
+      this.lastTick = this.serverTime;
+
+      await sleep(1);
+    });
+  },
+
+  sendMessage() {
+    postMessage({ command: 'fireBtn' });
+  },
+
+  updateCurrentServerTime() {
+    postMessage({ command: 'getTime' });
+  }
+};
+
+worker.load();
+
+self.onmessage = function (e) {
+  if (e.data.command === 'initialize') {
+    worker.run(e.data);
+  } else if (e.data.command === 'setTime') {
+    worker.serverTime = e.data.serverTime;
+  } else if (e.data.command === 'setOffset') {
+    worker.ping = e.data.ping;
+  }
+};
+        `;
+
+        const blob = new Blob([script], { type: 'text/javascript' });
+        const url = URL.createObjectURL(blob);
+        const worker = new Worker(url);
+        URL.revokeObjectURL(url);
+        callback(worker);
+    },
+
+    calcPing(worker) {
+        if (localStorage['pinger'] !== undefined) {
+            let cache = JSON.parse(localStorage.pinger);
+            if (Date.now() - cache.writeTime <= PingCacheExpiration) {
+                console.log('Reading ping from cache');
+                worker.postMessage({ command: 'setOffset', ping: cache.ping });
+                return;
+            }
+        }
+
+        let pingCounter = 0;
+        let pingSum = 0;
+        let pingInterval = setInterval(async () => {
+            if (++pingCounter >= PingAvgSamples) {
+                worker.postMessage({ command: 'setOffset', ping: (pingSum / pingCounter) });
+                localStorage['pinger'] = JSON.stringify({
+                    writeTime: Date.now(),
+                    ping: (pingSum / pingCounter)
+                });
+                clearInterval(pingInterval);
+                return;
+            }
+            let result = await pinger.ping('game.php', 0.3);
+            pingSum += result;
+        }, 1000);
+    },
+
+    getSubmitButtonId() {
+        const questArrow = QuestArrows.arrows[1215];
+        if (questArrow != null) {
+            const targetMap = questArrow.active_nqs.map.find(e => e.target.includes('#troop_confirm'));
+            if (targetMap != null) return targetMap.target;
+        }
+        return null;
+    },
+
+    isElementVisible(elem) {
+        if (!(elem instanceof Element)) throw Error('DomUtil: elem is not an element.');
+        const style = getComputedStyle(elem);
+        if (style.display === 'none') return false;
+        if (style.visibility !== 'visible') return false;
+        if (style.opacity < 0.1) return false;
+        if (elem.offsetWidth + elem.offsetHeight + elem.getBoundingClientRect().height +
+            elem.getBoundingClientRect().width === 0) return false;
+        const elemCenter = {
+            x: elem.getBoundingClientRect().left + elem.offsetWidth / 2,
+            y: elem.getBoundingClientRect().top + elem.offsetHeight / 2
+        };
+        if (elemCenter.x < 0) return false;
+        if (elemCenter.x > (document.documentElement.clientWidth || window.innerWidth)) return false;
+        if (elemCenter.y < 0) return false;
+        if (elemCenter.y > (document.documentElement.clientHeight || window.innerHeight)) return false;
+        let pointContainer = document.elementFromPoint(elemCenter.x, elemCenter.y);
+        do {
+            if (pointContainer === elem) return true;
+        } while (pointContainer = pointContainer.parentNode);
+        return false;
+    }
+};
+
+client.load();
