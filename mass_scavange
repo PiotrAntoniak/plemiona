@@ -1,0 +1,148 @@
+// ==UserScript==
+// @name         Tribal Wars - Auto Mass Scavenge
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  On scavenge_mass page: execute mass scavenge script, click Calculate, click Launch group 1, repeat every ~1 hour
+// @author       You
+// @match        https://es100.guerrastribales.es/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ─── CONFIGURATION ───────────────────────────────────────────────────────────
+    const BASE_INTERVAL_MS         = 60 * 60_000;  // 1 hour
+    const JITTER_MIN_MS            = -5 * 60_000;  // −5 minutes
+    const JITTER_MAX_MS            =  5 * 60_000;  // +5 minutes
+
+    const AFTER_SCRIPT_DELAY_MS    = 10_000;  // wait after getScript before clicking Calculate
+    const AFTER_CALCULATE_DELAY_MS =  4_000;  // after clicking Calculate, before clicking Launch
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // ── Guard: only run on scavenge_mass ─────────────────────────────────────────
+    const mode = new URLSearchParams(location.search).get('mode') ?? '';
+    if (mode !== 'scavenge_mass') return;
+
+    log('Script loaded on mass scavenge page.');
+    setTimeout(run, 1500);
+
+    // ── Main flow ─────────────────────────────────────────────────────────────────
+
+    function run() {
+        log('Starting mass scavenge cycle…');
+
+        // Step 1: execute the mass scavenge bookmark script
+        var premiumBtnEnabled = false;
+        $.getScript('https://shinko-to-kuma.com/scripts/massScavenge.js');
+        log('Mass scavenge script injected.');
+
+        // Step 2: wait 10s, then click "Calculate runtimes for each page"
+        setTimeout(() => {
+            const calcBtn = findButton(/calculate runtimes for each page/i);
+            if (!calcBtn) {
+                log('Calculate button not found – retrying in 30s.');
+                setTimeout(run, 30_000);
+                return;
+            }
+            calcBtn.click();
+            log('Clicked "Calculate runtimes for each page".');
+
+            // Step 3: wait 4s, then click "Launch group 1"
+            setTimeout(() => {
+                const launchBtn = findButton(/launch group 1/i);
+                if (!launchBtn) {
+                    log('"Launch group 1" button not found – retrying in 30s.');
+                    setTimeout(run, 30_000);
+                    return;
+                }
+                launchBtn.click();
+                log('Clicked "Launch group 1".');
+
+                scheduleNextRun();
+
+            }, AFTER_CALCULATE_DELAY_MS);
+
+        }, AFTER_SCRIPT_DELAY_MS);
+    }
+
+    // ── Schedule next cycle ───────────────────────────────────────────────────────
+
+    function scheduleNextRun() {
+        const jitter   = randomBetween(JITTER_MIN_MS, JITTER_MAX_MS);
+        const totalMs  = BASE_INTERVAL_MS + jitter;
+
+        log(`Next run in: ${msToHMS(totalMs)}.`);
+        showCountdownOverlay(totalMs);
+
+        setTimeout(() => {
+            log('Re-running cycle…');
+            run();
+        }, totalMs);
+    }
+
+    // ── Find button by text ───────────────────────────────────────────────────────
+
+    function findButton(pattern) {
+        return [...document.querySelectorAll('button, input[type=button], input[type=submit], a.btn')]
+            .find(b => {
+                const text = (b.textContent || b.value || '').trim();
+                return pattern.test(text) && !b.disabled && b.offsetParent !== null;
+            }) ?? null;
+    }
+
+    // ── On-screen countdown overlay ───────────────────────────────────────────────
+
+    function showCountdownOverlay(totalMs) {
+        const old = document.getElementById('tw-mass-scavenge-overlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'tw-mass-scavenge-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(20, 10, 0, 0.88);
+            color: #f5dfa0;
+            border: 2px solid #8b6914;
+            border-radius: 8px;
+            padding: 12px 18px;
+            font-family: monospace;
+            font-size: 14px;
+            z-index: 99999;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            min-width: 240px;
+        `;
+
+        const deadline = Date.now() + totalMs;
+
+        function tick() {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+                overlay.innerHTML = '⚔️ <b>Mass Scavenge Auto</b><br>Launching…';
+                return;
+            }
+            overlay.innerHTML = `⚔️ <b>Mass Scavenge Auto</b><br>Next launch in: <b>${msToHMS(remaining)}</b>`;
+            setTimeout(tick, 1000);
+        }
+
+        tick();
+        document.body.appendChild(overlay);
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────────
+
+    function msToHMS(ms) {
+        const total = Math.max(0, Math.floor(Math.abs(ms) / 1000));
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    function log(msg) { console.log(`[TW-MassScavenge] ${msg}`); }
+
+})();
