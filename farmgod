@@ -5,7 +5,7 @@
 // @description  Every ~1 hour: run farma slajni script, Plan farms, Auto-Send All Farms
 // @author       You
 // @match        https://es100.guerrastribales.es/game.php*
-// @grant        none
+// @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
 (function () {
