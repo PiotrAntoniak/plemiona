@@ -432,7 +432,7 @@ window.FarmGod.Main = (function (Library, Translation) {
   };
 
   // FIX: human-like randomized delay — more natural than a fixed 250ms interval
-  const humanDelay = () => 250 + Math.floor(Math.random() * 100); // 200–400ms
+  const humanDelay = () => 360 + Math.floor(Math.random() * 150); // 200–400ms
 
   // FIX: processAutoSendQueue no longer self-schedules after sendFarm.
   // Instead it passes an onDone callback into sendFarm, so the next send only
