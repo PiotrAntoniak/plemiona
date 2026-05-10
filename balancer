@@ -1,0 +1,131 @@
+// ==UserScript==
+// @name         Tribal Wars - Auto WH Balancer
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  Every ~1 hour: execute WH Balancer script, wait 20s, click Send resources
+// @author       You
+// @match        https://es100.guerrastribales.es/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ─── CONFIGURATION ───────────────────────────────────────────────────────────
+    const BASE_INTERVAL_MS       = 60 * 60_000;  // 1 hour
+    const JITTER_MIN_MS          = -5 * 60_000;  // −5 minutes
+    const JITTER_MAX_MS          =  5 * 60_000;  // +5 minutes
+
+    const AFTER_SCRIPT_DELAY_MS  = 20_000;  // wait 20s after getScript before clicking
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    // ── Guard: only run on market transports screen ───────────────────────────────
+    const params = new URLSearchParams(location.search);
+    if (params.get('screen') !== 'market' || params.get('mode') !== 'transports') return;
+
+    log('Script loaded on WH Balancer page.');
+    setTimeout(run, 1500);
+
+    // ── Main flow ─────────────────────────────────────────────────────────────────
+
+    function run() {
+        log('Executing WH Balancer script…');
+        $.getScript('https://shinko-to-kuma.com/scripts/WHBalancerShinkoToKuma.js');
+
+        // Wait 20s for the balancer table to load, then click all "Send resources" buttons
+        setTimeout(() => {
+            const btns = findAllButtons(/send\s*resources/i);
+            if (btns.length === 0) {
+
+            } else {
+                btns.forEach((btn, i) => {
+                    setTimeout(() => {
+                        btn.click();
+
+                    }, i * 500); // stagger clicks 500ms apart
+                });
+            }
+            scheduleNextRun();
+        }, AFTER_SCRIPT_DELAY_MS);
+    }
+
+    // ── Schedule next cycle ───────────────────────────────────────────────────────
+
+    function scheduleNextRun() {
+        const jitter  = randomBetween(JITTER_MIN_MS, JITTER_MAX_MS);
+        const totalMs = BASE_INTERVAL_MS + jitter;
+
+        log(`Next run in: ${msToHMS(totalMs)}.`);
+        showCountdownOverlay(totalMs);
+
+        setTimeout(() => {
+            log('Re-running WH Balancer cycle…');
+            run();
+        }, totalMs);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────────
+
+    function findAllButtons(pattern) {
+        return [...document.querySelectorAll('button, input[type=button], input[type=submit], a.btn, a')]
+            .filter(b => {
+                const text = (b.textContent || b.value || '').trim();
+                return pattern.test(text) && !b.disabled && b.offsetParent !== null;
+            });
+    }
+
+    // ── On-screen countdown overlay ───────────────────────────────────────────────
+
+    function showCountdownOverlay(totalMs) {
+        const old = document.getElementById('tw-wh-balancer-overlay');
+        if (old) old.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'tw-wh-balancer-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: rgba(20, 10, 0, 0.88);
+            color: #f5dfa0;
+            border: 2px solid #8b6914;
+            border-radius: 8px;
+            padding: 12px 18px;
+            font-family: monospace;
+            font-size: 14px;
+            z-index: 99999;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            min-width: 240px;
+        `;
+
+        const deadline = Date.now() + totalMs;
+
+        function tick() {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) {
+                overlay.innerHTML = '⚖️ <b>WH Balancer Auto</b><br>Running…';
+                return;
+            }
+            overlay.innerHTML = `⚖️ <b>WH Balancer Auto</b><br>Next run in: <b>${msToHMS(remaining)}</b>`;
+            setTimeout(tick, 1000);
+        }
+
+        tick();
+        document.body.appendChild(overlay);
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────────
+
+    function msToHMS(ms) {
+        const total = Math.max(0, Math.floor(Math.abs(ms) / 1000));
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+
+    function randomBetween(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+    function log(msg) { console.log(`[TW-WHBalancer] ${msg}`); }
+
+})();
