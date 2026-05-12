@@ -1,0 +1,152 @@
+// ==UserScript==
+// @name         Sumator deffa w wiosce
+// @namespace    http://tampermonkey.net/
+// @version      1.5
+// @description  Sumowanie ilości wojsk defensywnych w przeglądzie wioski z opcją obliczenia ilości offów po kliknięciu przycisku, z zapisywaniem danych do lokalnego magazynu dla każdej wioski.
+// @author       Hinduss, improved by Zarez, fixed for ES by You
+// @include      https://*.*/game.php?*screen=overview
+// @include      https://*.*/game.php?*screen=overview&*
+// @grant        GM_xmlhttpRequest
+// @connect      *
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    ////// KONFIGURACJA ///////////////
+    let attAxe   = 6500;  // Toporniki
+    let attLight = 3000;  // Lekka
+    let attRam   = 300;   // Tarany
+    ///////////////////////////////////
+
+    let defSpear = 0, defArcher = 0, defHeavy = 0, defSword = 0;
+    let villageId = game_data.village.id;
+
+    // Dynamically build the base URL from the current server
+    const serverBase = `${location.protocol}//${location.host}`;
+    const imageBase  = (typeof image_base !== 'undefined') ? image_base : `${serverBase}/graphic/`;
+
+    let url;
+
+    function getWallLevel() {
+        let wallLevel = 0;
+        let wallElement = document.querySelector('a[href*="screen=wall"]');
+        if (wallElement) {
+            let match = wallElement.text.match(/(\d+)/);
+            if (match) {
+                wallLevel = parseInt(match[1], 10);
+                console.info('Wall:' + wallLevel);
+            }
+        }
+        return wallLevel;
+    }
+
+    function saveUnitsAndResult(villageId, troops, attacksNeeded) {
+        localStorage.setItem(`defensiveUnits_${villageId}`, JSON.stringify(troops));
+        localStorage.setItem(`attacksNeeded_${villageId}`, attacksNeeded);
+    }
+
+    function loadSavedData(villageId) {
+        let savedUnits        = localStorage.getItem(`defensiveUnits_${villageId}`);
+        let savedAttacksNeeded = localStorage.getItem(`attacksNeeded_${villageId}`);
+        if (savedUnits && savedAttacksNeeded) {
+            return { troops: JSON.parse(savedUnits), attacksNeeded: savedAttacksNeeded };
+        }
+        return null;
+    }
+
+    function areUnitsWithinTolerance(currentUnits, savedUnits, tolerance = 0.05) {
+        for (let unit in currentUnits) {
+            if (currentUnits.hasOwnProperty(unit)) {
+                if (savedUnits[unit] === 0) continue;
+                let diff = Math.abs(currentUnits[unit] - savedUnits[unit]) / savedUnits[unit];
+                if (diff > tolerance) return false;
+            }
+        }
+        return true;
+    }
+
+    function buildSimUrl(defWall) {
+        return `${serverBase}/game.php?screen=place&mode=sim&simulate&att_benefits=%5B%5D&def_benefits=%5B%5D` +
+               `&def_spear=${defSpear}&att_axe=${attAxe}&def_sword=${defSword}&def_archer=${defArcher}` +
+               `&att_light=${attLight}&def_heavy=${defHeavy}&att_ram=${attRam}&def_wall=${defWall}&luck=0`;
+    }
+
+    function getOffensiveUnitsResponse(callback) {
+        let defWall = getWallLevel();
+        url = buildSimUrl(defWall);
+        console.info(url);
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: url,
+            onload: function(response) {
+                if (response.status === 200) {
+                    // Match both Polish "Potrzeba <b>N</b>" and Spanish "Necesitas <b>N</b>" or just any <b>N</b> near the result
+                    let match = response.responseText.match(/(?:Potrzeba|Necesitas|Need[s]?)\s*<b>(\d+)<\/b>/i)
+                             || response.responseText.match(/<b>(\d+)<\/b>\s*(?:off|ataque)/i);
+                    if (match) {
+                        let attacksNeeded = match[1];
+                        saveUnitsAndResult(villageId, { defSpear, defSword, defArcher, defHeavy }, attacksNeeded);
+                        callback(attacksNeeded);
+                    } else {
+                        saveUnitsAndResult(villageId, { defSpear, defSword, defArcher, defHeavy }, 0);
+                        callback(0);
+                    }
+                } else {
+                    console.error('Failed to fetch:', response.statusText);
+                    saveUnitsAndResult(villageId, { defSpear, defSword, defArcher, defHeavy }, 0);
+                    callback(0);
+                }
+            },
+            onerror: function(error) {
+                console.error('Error:', error);
+                saveUnitsAndResult(villageId, { defSpear, defSword, defArcher, defHeavy }, 0);
+                callback(0);
+            }
+        });
+    }
+
+    function troopsInVillagePerPopulation(callback) {
+        let troops = {};
+        let total  = 0;
+
+        $('#show_units').find('.all_unit').each(function() {
+            troops[$(this).find('a').attr('data-unit')] = parseInt($(this).find('strong').text()) || 0;
+        });
+
+        for (let unit in troops) {
+            if (troops.hasOwnProperty(unit)) {
+                if      (unit === 'spear')  { total += troops[unit];     defSpear  = troops[unit]; }
+                else if (unit === 'sword')  { total += troops[unit];     defSword  = troops[unit]; }
+                else if (unit === 'archer') { total += troops[unit];     defArcher = troops[unit]; }
+                else if (unit === 'heavy')  { total += troops[unit] * 4; defHeavy  = troops[unit]; }
+            }
+        }
+
+        total = parseFloat(total / 20000).toFixed(2);
+
+        let savedData = loadSavedData(villageId);
+        let defWall   = getWallLevel();
+        url = buildSimUrl(defWall);
+
+        if (savedData && areUnitsWithinTolerance(troops, savedData.troops)) {
+            callback(`<tr id="def_sum_row"><td><img src="${imageBase}face.png"><strong> ${total}</strong> Zagrody <a href="${url}">(${savedData.attacksNeeded} offów)</a></td></tr>`);
+        } else {
+            callback(`<tr id="def_sum_row"><td><img src="${imageBase}face.png"><strong> ${total}</strong> Zagrody <button id="calculate_off_button">Oblicz Off</button></td></tr>`);
+        }
+    }
+
+    function addCalculateButtonListener() {
+        $('#calculate_off_button').on('click', function() {
+            getOffensiveUnitsResponse(function(attacksNeeded) {
+                $('#calculate_off_button').replaceWith(`<a href="${url}">(${attacksNeeded} offów)</a>`);
+            });
+        });
+    }
+
+    troopsInVillagePerPopulation(function(result) {
+        $('#unit_overview_table > tbody').before(result);
+        addCalculateButtonListener();
+    });
+
+})();
