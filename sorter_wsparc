@@ -1,0 +1,70 @@
+// ==UserScript==
+// @name         Sortowanie wsparcia
+// @version      0.3
+// @description  Sortuje wsparcie w wiosce wg. odleglosci miedzy wioskami
+// @author       stivens, fixed for ES by You
+// @match        https://*/game.php*screen=place&mode=units*
+// @match        https://*/game.php*screen=place*mode=units*
+// @grant        none
+// ==/UserScript==
+
+// Get current village coords from the header — works on both PL and ES servers
+var ta_wioska = $("#menu_row2 b.nowrap").html().split(/[(|)]/);
+var akt_x = parseInt(ta_wioska[1]) || 0;
+var akt_y = parseInt(ta_wioska[2]) || 0;
+
+var bufor, x, y, odl;
+var wsparcia = $("#units_home tr");
+var rodzic   = $("#units_home tr").parent();
+var licznik  = 0;
+
+jQuery.fn.sortDivs = function sortDivs() {
+    $("> tr", this[0]).sort(dec_sort).appendTo(this[0]);
+    function dec_sort(a, b) { return ($(b).data("odl")) < ($(a).data("odl")) ? 1 : -1; }
+};
+
+$("#units_home tr").each(function() {
+    if (licznik < 2) {
+        $(this).data('odl', 0);
+        licznik++;
+        return true;
+    }
+    if (licznik >= wsparcia.length - 2) {
+        $(this).data('odl', 9999);
+        licznik++;
+        return true;
+    }
+
+    bufor = $(this).find('td')[1];
+    bufor = $(bufor).text();
+
+    // Match 2-3 digit coordinate pairs like (584|538) — works on both PL and ES
+    var coordMatch = bufor.match(/\((\d{2,3})\|(\d{2,3})\)/);
+    if (coordMatch) {
+        x = parseInt(coordMatch[1]);
+        y = parseInt(coordMatch[2]);
+    } else {
+        // Fallback: grab last two number sequences
+        var nums = bufor.match(/\d{2,3}/g);
+        if (!nums || nums.length < 2) {
+            $(this).data('odl', 9998);
+            licznik++;
+            return true;
+        }
+        x = parseInt(nums[nums.length - 2]);
+        y = parseInt(nums[nums.length - 1]);
+    }
+
+    odl = Math.floor(Math.sqrt(Math.pow(akt_x - x, 2) + Math.pow(akt_y - y, 2)));
+    $(this).data('odl', odl);
+
+    bufor = $(this).find('td a')[0];
+    var etykieta = $(bufor).text();
+    etykieta = '[' + odl + '] ' + etykieta;
+    etykieta = etykieta.replace(/\(\d{2,3}\|\d{2,3}\) /, '');
+    $(bufor).text(etykieta);
+
+    licznik++;
+});
+
+$(rodzic).sortDivs();
