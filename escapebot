@@ -145,14 +145,12 @@
         });
     }
 
-    // ─── AUTO-FILL & SUBMIT ───────────────────────────────────────────────────
+    // ─── AUTO-FILL, THEN WAIT FOR EXACT TIME, THEN SUBMIT ───────────────────────
 
     function fillAndSubmit(config) {
-        // Disable autoSubmit so a page reload doesn't loop
         config.autoSubmit = false;
         saveConfig(config);
 
-        // Wait briefly for TW to finish rendering
         setTimeout(() => {
             // Fill units
             UNITS.forEach(u => {
@@ -169,26 +167,39 @@
                 if (supportTab) supportTab.click();
             }
 
-            // Click the form submit ("OK" button on place screen)
             const submitBtn =
                 document.querySelector('#target_okay') ||
                 document.querySelector('input[type="submit"].btn-default') ||
                 document.querySelector('input[type="submit"]') ||
                 document.querySelector('button[type="submit"]');
 
-            if (submitBtn) {
-                submitBtn.click();
-            } else {
+            if (!submitBtn) {
                 console.error('[Escape Bot] Submit button not found');
+                return;
             }
+
+            // Build send timestamp
+            const offsetH = Math.abs(new Date().getTimezoneOffset()) / 60;
+            const targetTs = new Date(
+                `${config.date}T${config.time}.${String(config.ms ?? 0).padStart(3, '0')}Z`
+            ).getTime() - offsetH * 3600000;
+
+            const statusEl = showStatus(
+                `⏳ Czekam na wysyłkę: ${config.date} ${config.time}.${String(config.ms ?? 0).padStart(3,'0')}`,
+                '#7d510a'
+            );
+
+            // Wait for exact time, then click send
+            launchWorker(targetTs, submitBtn, statusEl);
+
         }, 400);
     }
 
-    // ─── CONFIRM PAGE: FIRE AT EXACT TIME ─────────────────────────────────────
+    // ─── CONFIRM PAGE: IMMEDIATELY CLICK CONFIRM ─────────────────────────────
 
     function handleConfirmPage() {
         const config = getConfig();
-        if (!config?.date || !config?.time) return;
+        if (!config) return;
 
         const confirmBtn = getConfirmButton();
         if (!confirmBtn) {
@@ -196,16 +207,7 @@
             return;
         }
 
-        // Build absolute send timestamp (UTC) — this is WHEN TO CLICK, not arrival time
-        const offsetH = Math.abs(new Date().getTimezoneOffset()) / 60;
-        const targetTs = new Date(
-            `${config.date}T${config.time}.${String(config.ms ?? 0).padStart(3, '0')}Z`
-        ).getTime() - offsetH * 3600000;
-
-        const statusEl = showStatus(`⏳ Escape bot aktywny — wysyłka: ${config.date} ${config.time}.${String(config.ms ?? 0).padStart(3,'0')}`, '#7d510a');
-        localStorage.removeItem(STORAGE_KEY);
-
-        launchWorker(targetTs, confirmBtn, statusEl);
+        confirmBtn.click();
     }
 
     function launchWorker(targetTs, confirmBtn, statusEl) {
