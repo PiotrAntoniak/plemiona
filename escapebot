@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bot: Escape
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Fill units + arrival time, bot navigates and fires at exact millisecond
+// @version      3.0
+// @description  Escape bot � fill units, countdown, fire attack at exact millisecond
 // @author       You
 // @match        https://*.guerrastribales.es/game.php?*screen=place*
 // ==/UserScript==
@@ -10,32 +10,34 @@
 (function () {
     'use strict';
 
-    const UNITS = ['spear', 'sword', 'axe', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'snob'];
+    const UNITS       = ['spear', 'sword', 'axe', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'snob'];
     const STORAGE_KEY = 'escape_bot';
     const UI_KEY      = 'escape_bot_ui';
     const PING_KEY    = 'escape_bot_ping';
-    const PING_EXPIRY = 3 * 60 * 1000;
+    const PING_EXPIRY  = 3 * 60 * 1000;
     const PING_SAMPLES = 5;
 
+    const url    = new URL(location.href);
+    const mode   = url.searchParams.get('mode');
     const isConfirm = location.href.includes('try=confirm');
+    const village   = url.searchParams.get('village');
 
     if (isConfirm) {
         handleConfirmPage();
+    } else if (mode === 'command') {
+        handleCommandPage();
     } else {
-        const stored = getConfig();
-        if (stored?.autoSubmit) {
-            fillAndSubmit(stored);
-        } else {
-            showPanel();
-        }
+        showPanel();
     }
 
-    // ─── INPUT PANEL ──────────────────────────────────────────────────────────
+    // --- PANEL ---------------------------------------------------------------
 
     function showPanel() {
+        if (document.getElementById('escape-bot-panel')) return;
         const saved = getSavedUI();
 
         const panel = document.createElement('div');
+        panel.id    = 'escape-bot-panel';
         panel.style = [
             'position:fixed', 'top:60px', 'right:10px', 'z-index:9999',
             'background:#f4e4bc', 'border:2px solid #7d510a', 'padding:10px',
@@ -44,21 +46,12 @@
         ].join(';');
 
         panel.innerHTML = `
-            <b style="font-size:13px">⚔ Escape Bot</b>
+            <b style="font-size:13px">&#9876; Escape Bot</b>
             <hr style="border-color:#7d510a">
             <table style="border-collapse:collapse;width:100%">
                 <tr>
-                    <td style="padding:2px 4px">Cel (ID wioski)</td>
-                    <td><input id="esc-target" type="number" style="width:80px" placeholder="np. 562" value="${saved.target||''}"></td>
-                </tr>
-                <tr>
-                    <td style="padding:2px 4px">Typ</td>
-                    <td>
-                        <select id="esc-type">
-                            <option value="support"${saved.type==='support'?' selected':''}>Wsparcie</option>
-                            <option value="attack"${saved.type==='attack'?' selected':''}>Atak</option>
-                        </select>
-                    </td>
+                    <td style="padding:2px 4px">Cel (koord.)</td>
+                    <td><input id="esc-coord" type="text" style="width:88px" placeholder="576|538" value="${saved.coord||''}"></td>
                 </tr>
                 ${UNITS.map(u => `
                 <tr>
@@ -67,18 +60,18 @@
                 </tr>`).join('')}
                 <tr><td colspan="2"><hr style="border-color:#7d510a;margin:4px 0"></td></tr>
                 <tr>
-                    <td style="padding:2px 4px">Data wysyłki</td>
+                    <td style="padding:2px 4px">Data wysylki</td>
                     <td>
                         <input id="esc-date" type="text" placeholder="rrrr-mm-dd" style="width:88px" value="${saved.date||''}">
                         <div style="margin-top:3px">
-                            <button id="esc-today" class="btn" style="font-size:10px">Dziś</button>
-                            <button id="esc-minus" class="btn" style="font-size:10px;width:22px">-</button>
-                            <button id="esc-plus"  class="btn" style="font-size:10px;width:22px">+</button>
+                            <button id="esc-today" class="btn" style="font-size:10px">Dzis</button>
+                            <button id="esc-day-" class="btn" style="font-size:10px;width:22px">-</button>
+                            <button id="esc-day+" class="btn" style="font-size:10px;width:22px">+</button>
                         </div>
                     </td>
                 </tr>
                 <tr>
-                    <td style="padding:2px 4px">Godzina wysyłki</td>
+                    <td style="padding:2px 4px">Godzina</td>
                     <td><input id="esc-time" type="text" placeholder="hh:mm:ss" style="width:88px" value="${saved.time||''}"></td>
                 </tr>
                 <tr>
@@ -87,21 +80,19 @@
                 </tr>
             </table>
             <button id="esc-go" style="margin-top:8px;width:100%;padding:5px;background:#7d510a;color:#fff;border:none;cursor:pointer;font-weight:bold;font-size:13px">
-                🚀 UCIECZKA
+                UCIECZKA
             </button>
             <div id="esc-err" style="color:red;margin-top:4px;font-size:11px"></div>
         `;
-
         document.body.appendChild(panel);
 
-        // Date helpers
         document.getElementById('esc-today').addEventListener('click', () => {
             const d = new Date();
             document.getElementById('esc-date').value =
                 new Date(d - d.getTimezoneOffset() * 60000).toISOString().split('T')[0];
         });
-        document.getElementById('esc-minus').addEventListener('click', () => shiftDate(-1));
-        document.getElementById('esc-plus').addEventListener('click',  () => shiftDate(+1));
+        document.getElementById('esc-day-').addEventListener('click', () => shiftDate(-1));
+        document.getElementById('esc-day+').addEventListener('click', () => shiftDate(+1));
 
         function shiftDate(delta) {
             const v = document.getElementById('esc-date').value;
@@ -112,166 +103,119 @@
         }
 
         document.getElementById('esc-go').addEventListener('click', () => {
-            const target = document.getElementById('esc-target').value.trim();
-            const date   = document.getElementById('esc-date').value.trim();
-            const time   = document.getElementById('esc-time').value.trim();
-            const ms     = document.getElementById('esc-ms').value || '0';
-            const type   = document.getElementById('esc-type').value;
+            const coordStr = document.getElementById('esc-coord').value.trim();
+            const date     = document.getElementById('esc-date').value.trim();
+            const time     = document.getElementById('esc-time').value.trim();
+            const ms       = document.getElementById('esc-ms').value || '0';
+            const errEl    = document.getElementById('esc-err');
 
-            if (!target || !date || !time) {
-                document.getElementById('esc-err').textContent = 'Uzupełnij cel, datę i godzinę!';
-                return;
-            }
+            if (!coordStr || !date || !time) { errEl.textContent = 'Uzupelnij koordynaty, date i godzine!'; return; }
+
+            const [rawX, rawY] = coordStr.replace(';','|').split('|');
+            const cx = (rawX||'').trim(), cy = (rawY||'').trim();
+            if (!cx || !cy || isNaN(+cx) || isNaN(+cy)) { errEl.textContent = 'Format: 576|538'; return; }
 
             const units = {};
-            UNITS.forEach(u => {
-                const v = parseInt(document.getElementById(`esc-${u}`)?.value || '0');
-                if (v > 0) units[u] = v;
-            });
+            UNITS.forEach(u => { const v = parseInt(document.getElementById('esc-'+u)?.value||'0'); if (v>0) units[u]=v; });
+            if (!Object.keys(units).length) { errEl.textContent = 'Podaj co najmniej jedna jednostke!'; return; }
 
-            if (!Object.keys(units).length) {
-                document.getElementById('esc-err').textContent = 'Podaj co najmniej jedną jednostkę!';
-                return;
-            }
+            localStorage.setItem(UI_KEY, JSON.stringify({coord:coordStr, date, time, ms, units}));
+            saveConfig({cx, cy, date, time, ms, units, commandPending:true});
 
-            // Persist UI state across pages
-            localStorage.setItem(UI_KEY, JSON.stringify({ target, date, time, ms, type, units }));
-
-            // Config for auto-fill on place screen
-            const village = new URLSearchParams(location.search).get('village');
-            saveConfig({ target, date, time, ms, type, units, village, autoSubmit: true });
-
-            window.location.href = `game.php?village=${village}&screen=place&target=${target}`;
+            location.href = 'game.php?village=' + village + '&screen=place&mode=command';
         });
     }
 
-    // ─── AUTO-FILL, THEN WAIT FOR EXACT TIME, THEN SUBMIT ───────────────────────
+    // --- COMMAND PAGE --------------------------------------------------------
 
-    function fillAndSubmit(config) {
-        config.autoSubmit = false;
+    function handleCommandPage() {
+        const config = getConfig();
+        if (!config || !config.commandPending) return;
+
+        config.commandPending = false;
         saveConfig(config);
 
         setTimeout(() => {
-            // Fill units
+            const xInp = document.querySelector('input[name="x"]') || document.querySelector('#place_x');
+            const yInp = document.querySelector('input[name="y"]') || document.querySelector('#place_y');
+            if (xInp) { xInp.value = config.cx; xInp.dispatchEvent(new Event('change', {bubbles:true})); }
+            if (yInp) { yInp.value = config.cy; yInp.dispatchEvent(new Event('change', {bubbles:true})); }
+
             UNITS.forEach(u => {
-                const inp = document.querySelector(`input[name="${u}"]`);
-                if (inp && config.units[u]) {
-                    inp.value = config.units[u];
-                    inp.dispatchEvent(new Event('input', { bubbles: true }));
-                }
+                const inp = document.querySelector('input[name="' + u + '"]');
+                if (inp && config.units[u]) { inp.value = config.units[u]; inp.dispatchEvent(new Event('change', {bubbles:true})); }
             });
 
-            // Select support / attack tab
-            if (config.type === 'support') {
-                const supportTab = document.querySelector('a[href*="type=support"], #support_type');
-                if (supportTab) supportTab.click();
-            }
+            const attackBtn =
+                document.querySelector('input#target_attack') ||
+                document.querySelector('input[name="attack"]') ||
+                Array.from(document.querySelectorAll('input[type="submit"]')).find(b => /atak|attack/i.test(b.value)) ||
+                document.querySelector('input[type="submit"]');
 
-            const submitBtn =
-                document.querySelector('#target_okay') ||
-                document.querySelector('input[type="submit"].btn-default') ||
-                document.querySelector('input[type="submit"]') ||
-                document.querySelector('button[type="submit"]');
+            if (!attackBtn) { showStatus('Nie znaleziono przycisku Atak!', 'red'); return; }
 
-            if (!submitBtn) {
-                console.error('[Escape Bot] Submit button not found');
-                return;
-            }
-
-            // Build send timestamp
             const offsetH = Math.abs(new Date().getTimezoneOffset()) / 60;
             const targetTs = new Date(
-                `${config.date}T${config.time}.${String(config.ms ?? 0).padStart(3, '0')}Z`
+                config.date + 'T' + config.time + '.' + String(config.ms ?? 0).padStart(3,'0') + 'Z'
             ).getTime() - offsetH * 3600000;
 
-            const statusEl = showStatus(
-                `⏳ Czekam na wysyłkę: ${config.date} ${config.time}.${String(config.ms ?? 0).padStart(3,'0')}`,
-                '#7d510a'
-            );
+            saveConfig({confirmPending: true});
 
-            // Wait for exact time, then click send
-            launchWorker(targetTs, submitBtn, statusEl);
+            const statusEl = showStatus('Wysylka o: ' + config.date + ' ' + config.time + '.' + String(config.ms??0).padStart(3,'0'), '#7d510a');
+            launchWorker(targetTs, attackBtn, statusEl);
 
-        }, 400);
+        }, 600);
     }
 
-    // ─── CONFIRM PAGE: IMMEDIATELY CLICK CONFIRM ─────────────────────────────
+    // --- CONFIRM PAGE --------------------------------------------------------
 
     function handleConfirmPage() {
         const config = getConfig();
-        if (!config) return;
-
-        const confirmBtn = getConfirmButton();
-        if (!confirmBtn) {
-            showStatus('❌ Nie znaleziono przycisku potwierdzenia!', 'red');
-            return;
-        }
-
-        confirmBtn.click();
+        if (!config || !config.confirmPending) return;
+        localStorage.removeItem(STORAGE_KEY);
+        const btn = getConfirmButton();
+        if (!btn) { showStatus('Nie znaleziono przycisku potwierdzenia!', 'red'); return; }
+        setTimeout(() => btn.click(), 50);
     }
 
-    function launchWorker(targetTs, confirmBtn, statusEl) {
-        const workerSrc = `
-let w = {
-  terminated: false, ticks: 0, totalDelay: 0,
-  serverTime: 0, lastTick: 0, ping: 30, waitingForPing: false,
+    // --- TIMING WORKER -------------------------------------------------------
 
-  run(data) {
-    this.serverTime = data.serverTime;
-    this.lastTick   = this.serverTime;
-    const sleep = ms => new Promise(r => setTimeout(r, ms));
-    (async () => {
-      while (!this.terminated) {
-        postMessage({ command: 'getTime' });
-        const avg = this.ticks > 0 ? this.totalDelay / this.ticks : 1;
-        const remaining = (data.target + this.ping - avg) - this.serverTime;
+    function launchWorker(targetTs, btn, statusEl) {
+        const src = [
+            'let w={terminated:false,ticks:0,totalDelay:0,serverTime:0,lastTick:0,ping:30,waitingForPing:false,',
+            'run(data){',
+            '  this.serverTime=data.serverTime; this.lastTick=this.serverTime;',
+            '  const sleep=ms=>new Promise(r=>setTimeout(r,ms));',
+            '  (async()=>{',
+            '    while(!this.terminated){',
+            '      postMessage({command:"getTime"});',
+            '      const avg=this.ticks>0?this.totalDelay/this.ticks:1;',
+            '      const rem=(data.target+this.ping-avg)-this.serverTime;',
+            '      if(!this.waitingForPing&&rem<=20000&&rem>=15000){this.waitingForPing=true;postMessage({command:"getAveragePing"});}',
+            '      if(rem<=0){this.terminated=true;postMessage({command:"fireBtn"});return;}',
+            '      this.ticks++;this.totalDelay+=this.serverTime-this.lastTick;this.lastTick=this.serverTime;',
+            '      await sleep(1);',
+            '    }',
+            '  })();',
+            '}};',
+            'self.onmessage=function(e){',
+            '  if(e.data.command==="initialize")w.run(e.data);',
+            '  else if(e.data.command==="setTime")w.serverTime=e.data.serverTime;',
+            '  else if(e.data.command==="setOffset")w.ping=e.data.ping;',
+            '};'
+        ].join('\n');
 
-        if (!this.waitingForPing && remaining <= 20000 && remaining >= 15000) {
-          this.waitingForPing = true;
-          postMessage({ command: 'getAveragePing' });
-        }
-
-        if (remaining <= 0) {
-          this.terminated = true;
-          postMessage({ command: 'fireBtn' });
-          return;
-        }
-
-        this.ticks++;
-        this.totalDelay += this.serverTime - this.lastTick;
-        this.lastTick = this.serverTime;
-        await sleep(1);
-      }
-    })();
-  }
-};
-
-self.onmessage = function(e) {
-  if      (e.data.command === 'initialize') w.run(e.data);
-  else if (e.data.command === 'setTime')    w.serverTime = e.data.serverTime;
-  else if (e.data.command === 'setOffset')  w.ping = e.data.ping;
-};
-        `;
-
-        const blob   = new Blob([workerSrc], { type: 'text/javascript' });
-        const worker = new Worker(URL.createObjectURL(blob));
-
-        worker.postMessage({
-            command:    'initialize',
-            offset:     Timing.offset_to_server,
-            target:     targetTs,
-            serverTime: Timing.getCurrentServerTime()
-        });
-
-        worker.onmessage = function (e) {
-            switch (e.data.command) {
+        const worker = new Worker(URL.createObjectURL(new Blob([src], {type:'text/javascript'})));
+        worker.postMessage({command:'initialize', offset:Timing.offset_to_server, target:targetTs, serverTime:Timing.getCurrentServerTime()});
+        worker.onmessage = function(e) {
+            switch(e.data.command) {
                 case 'fireBtn':
-                    confirmBtn.click();
+                    btn.click();
                     worker.terminate();
-                    if (statusEl) statusEl.textContent = '✅ Wysłano!';
+                    if (statusEl) statusEl.textContent = 'Wyslano!';
                     break;
                 case 'getTime':
-                    worker.postMessage({ command: 'setTime', serverTime: Timing.getCurrentServerTime() });
+                    worker.postMessage({command:'setTime', serverTime:Timing.getCurrentServerTime()});
                     break;
                 case 'getAveragePing':
                     calcPing(worker);
@@ -280,13 +224,13 @@ self.onmessage = function(e) {
         };
     }
 
-    // ─── HELPERS ─────────────────────────────────────────────────────────────
+    // --- HELPERS -------------------------------------------------------------
 
     function getConfirmButton() {
         if (typeof QuestArrows !== 'undefined') {
-            const arrow = QuestArrows.arrows?.[1215];
+            const arrow = QuestArrows.arrows && QuestArrows.arrows[1215];
             if (arrow) {
-                const map = arrow.active_nqs?.map?.find(e => e.target?.includes('#troop_confirm'));
+                const map = arrow.active_nqs && arrow.active_nqs.map && arrow.active_nqs.map.find(function(e){return e.target && e.target.includes('#troop_confirm');});
                 if (map) return document.querySelector(map.target);
             }
         }
@@ -297,47 +241,33 @@ self.onmessage = function(e) {
 
     function showStatus(msg, color) {
         const el = document.createElement('div');
-        el.style = `background:#f4e4bc;border:2px solid ${color||'#7d510a'};padding:8px;margin:10px 0;font-weight:bold;font-size:12px`;
+        el.style = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9999;background:#f4e4bc;border:2px solid '+(color||'#7d510a')+';padding:10px 20px;font-weight:bold;font-size:14px;font-family:Verdana,sans-serif';
         el.textContent = msg;
-        document.querySelector('#command-data-form')?.insertAdjacentElement('afterend', el);
+        document.body.appendChild(el);
         return el;
     }
 
     function calcPing(worker) {
         if (localStorage[PING_KEY]) {
             const cache = JSON.parse(localStorage[PING_KEY]);
-            if (Date.now() - cache.writeTime <= PING_EXPIRY) {
-                worker.postMessage({ command: 'setOffset', ping: cache.ping });
-                return;
-            }
+            if (Date.now() - cache.writeTime <= PING_EXPIRY) { worker.postMessage({command:'setOffset', ping:cache.ping}); return; }
         }
-        let count = 0, sum = 0;
-        const iv = setInterval(async () => {
+        let count=0, sum=0;
+        const iv = setInterval(async function() {
             if (++count >= PING_SAMPLES) {
-                const avg = sum / count;
-                worker.postMessage({ command: 'setOffset', ping: avg });
-                localStorage[PING_KEY] = JSON.stringify({ writeTime: Date.now(), ping: avg });
-                clearInterval(iv);
-                return;
+                const avg = sum/count;
+                worker.postMessage({command:'setOffset', ping:avg});
+                localStorage[PING_KEY] = JSON.stringify({writeTime:Date.now(), ping:avg});
+                clearInterval(iv); return;
             }
             const start = Date.now();
-            await new Promise(r => {
-                const img = new Image();
-                img.onload = img.onerror = r;
-                img.src = 'game.php?nc=' + Math.random().toString(16).slice(2);
-            });
-            sum += (Date.now() - start) * 0.3;
+            await new Promise(function(r){ const img=new Image(); img.onload=img.onerror=r; img.src='game.php?nc='+Math.random().toString(16).slice(2); });
+            sum += (Date.now()-start)*0.3;
         }, 1000);
     }
 
-    function saveConfig(cfg) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
-    }
-    function getConfig() {
-        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; }
-    }
-    function getSavedUI() {
-        try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch { return {}; }
-    }
+    function saveConfig(cfg) { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); }
+    function getConfig()     { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch(e) { return null; } }
+    function getSavedUI()    { try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch(e) { return {}; } }
 
 })();
