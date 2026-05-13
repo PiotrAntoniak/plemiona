@@ -1,0 +1,341 @@
+// ==UserScript==
+// @name         Bot: Escape
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Fill units + arrival time, bot navigates and fires at exact millisecond
+// @author       You
+// @match        https://*.guerrastribales.es/game.php?*screen=place*
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const UNITS = ['spear', 'sword', 'axe', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'snob'];
+    const STORAGE_KEY = 'escape_bot';
+    const UI_KEY      = 'escape_bot_ui';
+    const PING_KEY    = 'escape_bot_ping';
+    const PING_EXPIRY = 3 * 60 * 1000;
+    const PING_SAMPLES = 5;
+
+    const isConfirm = location.href.includes('try=confirm');
+
+    if (isConfirm) {
+        handleConfirmPage();
+    } else {
+        const stored = getConfig();
+        if (stored?.autoSubmit) {
+            fillAndSubmit(stored);
+        } else {
+            showPanel();
+        }
+    }
+
+    // ─── INPUT PANEL ──────────────────────────────────────────────────────────
+
+    function showPanel() {
+        const saved = getSavedUI();
+
+        const panel = document.createElement('div');
+        panel.style = [
+            'position:fixed', 'top:60px', 'right:10px', 'z-index:9999',
+            'background:#f4e4bc', 'border:2px solid #7d510a', 'padding:10px',
+            'font-size:12px', 'font-family:Verdana,sans-serif',
+            'min-width:240px', 'box-shadow:3px 3px 8px rgba(0,0,0,.45)'
+        ].join(';');
+
+        panel.innerHTML = `
+            <b style="font-size:13px">⚔ Escape Bot</b>
+            <hr style="border-color:#7d510a">
+            <table style="border-collapse:collapse;width:100%">
+                <tr>
+                    <td style="padding:2px 4px">Cel (ID wioski)</td>
+                    <td><input id="esc-target" type="number" style="width:80px" placeholder="np. 562" value="${saved.target||''}"></td>
+                </tr>
+                <tr>
+                    <td style="padding:2px 4px">Typ</td>
+                    <td>
+                        <select id="esc-type">
+                            <option value="support"${saved.type==='support'?' selected':''}>Wsparcie</option>
+                            <option value="attack"${saved.type==='attack'?' selected':''}>Atak</option>
+                        </select>
+                    </td>
+                </tr>
+                ${UNITS.map(u => `
+                <tr>
+                    <td style="padding:2px 4px">${u}</td>
+                    <td><input id="esc-${u}" type="number" min="0" style="width:80px" value="${saved.units?.[u]||0}"></td>
+                </tr>`).join('')}
+                <tr><td colspan="2"><hr style="border-color:#7d510a;margin:4px 0"></td></tr>
+                <tr>
+                    <td style="padding:2px 4px">Data wysyłki</td>
+                    <td>
+                        <input id="esc-date" type="text" placeholder="rrrr-mm-dd" style="width:88px" value="${saved.date||''}">
+                        <div style="margin-top:3px">
+                            <button id="esc-today" class="btn" style="font-size:10px">Dziś</button>
+                            <button id="esc-minus" class="btn" style="font-size:10px;width:22px">-</button>
+                            <button id="esc-plus"  class="btn" style="font-size:10px;width:22px">+</button>
+                        </div>
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding:2px 4px">Godzina wysyłki</td>
+                    <td><input id="esc-time" type="text" placeholder="hh:mm:ss" style="width:88px" value="${saved.time||''}"></td>
+                </tr>
+                <tr>
+                    <td style="padding:2px 4px">Milisekundy</td>
+                    <td><input id="esc-ms" type="number" min="0" max="999" style="width:60px" value="${saved.ms??0}"></td>
+                </tr>
+            </table>
+            <button id="esc-go" style="margin-top:8px;width:100%;padding:5px;background:#7d510a;color:#fff;border:none;cursor:pointer;font-weight:bold;font-size:13px">
+                🚀 UCIECZKA
+            </button>
+            <div id="esc-err" style="color:red;margin-top:4px;font-size:11px"></div>
+        `;
+
+        document.body.appendChild(panel);
+
+        // Date helpers
+        document.getElementById('esc-today').addEventListener('click', () => {
+            const d = new Date();
+            document.getElementById('esc-date').value =
+                new Date(d - d.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+        });
+        document.getElementById('esc-minus').addEventListener('click', () => shiftDate(-1));
+        document.getElementById('esc-plus').addEventListener('click',  () => shiftDate(+1));
+
+        function shiftDate(delta) {
+            const v = document.getElementById('esc-date').value;
+            if (!v) return;
+            const d = new Date(v);
+            document.getElementById('esc-date').value =
+                new Date(d - d.getTimezoneOffset() * 60000 + delta * 86400000).toISOString().split('T')[0];
+        }
+
+        document.getElementById('esc-go').addEventListener('click', () => {
+            const target = document.getElementById('esc-target').value.trim();
+            const date   = document.getElementById('esc-date').value.trim();
+            const time   = document.getElementById('esc-time').value.trim();
+            const ms     = document.getElementById('esc-ms').value || '0';
+            const type   = document.getElementById('esc-type').value;
+
+            if (!target || !date || !time) {
+                document.getElementById('esc-err').textContent = 'Uzupełnij cel, datę i godzinę!';
+                return;
+            }
+
+            const units = {};
+            UNITS.forEach(u => {
+                const v = parseInt(document.getElementById(`esc-${u}`)?.value || '0');
+                if (v > 0) units[u] = v;
+            });
+
+            if (!Object.keys(units).length) {
+                document.getElementById('esc-err').textContent = 'Podaj co najmniej jedną jednostkę!';
+                return;
+            }
+
+            // Persist UI state across pages
+            localStorage.setItem(UI_KEY, JSON.stringify({ target, date, time, ms, type, units }));
+
+            // Config for auto-fill on place screen
+            const village = new URLSearchParams(location.search).get('village');
+            saveConfig({ target, date, time, ms, type, units, village, autoSubmit: true });
+
+            window.location.href = `game.php?village=${village}&screen=place&target=${target}`;
+        });
+    }
+
+    // ─── AUTO-FILL & SUBMIT ───────────────────────────────────────────────────
+
+    function fillAndSubmit(config) {
+        // Disable autoSubmit so a page reload doesn't loop
+        config.autoSubmit = false;
+        saveConfig(config);
+
+        // Wait briefly for TW to finish rendering
+        setTimeout(() => {
+            // Fill units
+            UNITS.forEach(u => {
+                const inp = document.querySelector(`input[name="${u}"]`);
+                if (inp && config.units[u]) {
+                    inp.value = config.units[u];
+                    inp.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+            });
+
+            // Select support / attack tab
+            if (config.type === 'support') {
+                const supportTab = document.querySelector('a[href*="type=support"], #support_type');
+                if (supportTab) supportTab.click();
+            }
+
+            // Click the form submit ("OK" button on place screen)
+            const submitBtn =
+                document.querySelector('#target_okay') ||
+                document.querySelector('input[type="submit"].btn-default') ||
+                document.querySelector('input[type="submit"]') ||
+                document.querySelector('button[type="submit"]');
+
+            if (submitBtn) {
+                submitBtn.click();
+            } else {
+                console.error('[Escape Bot] Submit button not found');
+            }
+        }, 400);
+    }
+
+    // ─── CONFIRM PAGE: FIRE AT EXACT TIME ─────────────────────────────────────
+
+    function handleConfirmPage() {
+        const config = getConfig();
+        if (!config?.date || !config?.time) return;
+
+        const confirmBtn = getConfirmButton();
+        if (!confirmBtn) {
+            showStatus('❌ Nie znaleziono przycisku potwierdzenia!', 'red');
+            return;
+        }
+
+        // Build absolute send timestamp (UTC) — this is WHEN TO CLICK, not arrival time
+        const offsetH = Math.abs(new Date().getTimezoneOffset()) / 60;
+        const targetTs = new Date(
+            `${config.date}T${config.time}.${String(config.ms ?? 0).padStart(3, '0')}Z`
+        ).getTime() - offsetH * 3600000;
+
+        const statusEl = showStatus(`⏳ Escape bot aktywny — wysyłka: ${config.date} ${config.time}.${String(config.ms ?? 0).padStart(3,'0')}`, '#7d510a');
+        localStorage.removeItem(STORAGE_KEY);
+
+        launchWorker(targetTs, confirmBtn, statusEl);
+    }
+
+    function launchWorker(targetTs, confirmBtn, statusEl) {
+        const workerSrc = `
+let w = {
+  terminated: false, ticks: 0, totalDelay: 0,
+  serverTime: 0, lastTick: 0, ping: 30, waitingForPing: false,
+
+  run(data) {
+    this.serverTime = data.serverTime;
+    this.lastTick   = this.serverTime;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    (async () => {
+      while (!this.terminated) {
+        postMessage({ command: 'getTime' });
+        const avg = this.ticks > 0 ? this.totalDelay / this.ticks : 1;
+        const remaining = (data.target + this.ping - avg) - this.serverTime;
+
+        if (!this.waitingForPing && remaining <= 20000 && remaining >= 15000) {
+          this.waitingForPing = true;
+          postMessage({ command: 'getAveragePing' });
+        }
+
+        if (remaining <= 0) {
+          this.terminated = true;
+          postMessage({ command: 'fireBtn' });
+          return;
+        }
+
+        this.ticks++;
+        this.totalDelay += this.serverTime - this.lastTick;
+        this.lastTick = this.serverTime;
+        await sleep(1);
+      }
+    })();
+  }
+};
+
+self.onmessage = function(e) {
+  if      (e.data.command === 'initialize') w.run(e.data);
+  else if (e.data.command === 'setTime')    w.serverTime = e.data.serverTime;
+  else if (e.data.command === 'setOffset')  w.ping = e.data.ping;
+};
+        `;
+
+        const blob   = new Blob([workerSrc], { type: 'text/javascript' });
+        const worker = new Worker(URL.createObjectURL(blob));
+
+        worker.postMessage({
+            command:    'initialize',
+            offset:     Timing.offset_to_server,
+            target:     targetTs,
+            serverTime: Timing.getCurrentServerTime()
+        });
+
+        worker.onmessage = function (e) {
+            switch (e.data.command) {
+                case 'fireBtn':
+                    confirmBtn.click();
+                    worker.terminate();
+                    if (statusEl) statusEl.textContent = '✅ Wysłano!';
+                    break;
+                case 'getTime':
+                    worker.postMessage({ command: 'setTime', serverTime: Timing.getCurrentServerTime() });
+                    break;
+                case 'getAveragePing':
+                    calcPing(worker);
+                    break;
+            }
+        };
+    }
+
+    // ─── HELPERS ─────────────────────────────────────────────────────────────
+
+    function getConfirmButton() {
+        if (typeof QuestArrows !== 'undefined') {
+            const arrow = QuestArrows.arrows?.[1215];
+            if (arrow) {
+                const map = arrow.active_nqs?.map?.find(e => e.target?.includes('#troop_confirm'));
+                if (map) return document.querySelector(map.target);
+            }
+        }
+        return document.querySelector('#troop_confirm_go') ||
+               document.querySelector('input.btn-confirm-yes') ||
+               document.querySelector('button.btn-confirm-yes');
+    }
+
+    function showStatus(msg, color) {
+        const el = document.createElement('div');
+        el.style = `background:#f4e4bc;border:2px solid ${color||'#7d510a'};padding:8px;margin:10px 0;font-weight:bold;font-size:12px`;
+        el.textContent = msg;
+        document.querySelector('#command-data-form')?.insertAdjacentElement('afterend', el);
+        return el;
+    }
+
+    function calcPing(worker) {
+        if (localStorage[PING_KEY]) {
+            const cache = JSON.parse(localStorage[PING_KEY]);
+            if (Date.now() - cache.writeTime <= PING_EXPIRY) {
+                worker.postMessage({ command: 'setOffset', ping: cache.ping });
+                return;
+            }
+        }
+        let count = 0, sum = 0;
+        const iv = setInterval(async () => {
+            if (++count >= PING_SAMPLES) {
+                const avg = sum / count;
+                worker.postMessage({ command: 'setOffset', ping: avg });
+                localStorage[PING_KEY] = JSON.stringify({ writeTime: Date.now(), ping: avg });
+                clearInterval(iv);
+                return;
+            }
+            const start = Date.now();
+            await new Promise(r => {
+                const img = new Image();
+                img.onload = img.onerror = r;
+                img.src = 'game.php?nc=' + Math.random().toString(16).slice(2);
+            });
+            sum += (Date.now() - start) * 0.3;
+        }, 1000);
+    }
+
+    function saveConfig(cfg) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    }
+    function getConfig() {
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; }
+    }
+    function getSavedUI() {
+        try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch { return {}; }
+    }
+
+})();
