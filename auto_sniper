@@ -1,0 +1,314 @@
+// ==UserScript==
+// @name         Kliny Auto-Sniper
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Auto-sends snipes from the Kliny memo table with precise timing
+// @author       You
+// @match        https://*.plemiona.pl/game.php*
+// @match        https://*.tribalwars.net/game.php*
+// @match        https://*.die-staemme.de/game.php*
+// @match        https://*.staemme.ch/game.php*
+// @match        https://*.tribalwars.nl/game.php*
+// @match        https://*.tribalwars.co.uk/game.php*
+// @match        https://*.tribalwars.us/game.php*
+// @match        https://*.tribalwars.com.pt/game.php*
+// @match        https://*.tribalwars.com.br/game.php*
+// @match        https://*.divokekmeny.cz/game.php*
+// @match        https://*.tribals.it/game.php*
+// @match        https://*.guerretribale.fr/game.php*
+// @match        https://*.guerrastribales.es/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const SNIPE_KEY = 'kliny_snipe_target';   // localStorage: snipe timing data
+    const CLOSE_KEY = 'kliny_close_tab';      // sessionStorage: "close this tab"
+    const TTL_MS    = 120_000;                // stored data expires after 2 minutes
+
+    const params   = new URLSearchParams(location.search);
+    const screen   = params.get('screen');
+    const tryParam = params.get('try');
+
+    // ── After a snipe fires, the page navigates to a result page.
+    //    We store CLOSE_KEY in sessionStorage so the result page can close the tab.
+    if (sessionStorage.getItem(CLOSE_KEY)) {
+        sessionStorage.removeItem(CLOSE_KEY);
+        window.close();
+        // window.close() may be blocked for non-script-opened tabs; show a button as fallback.
+        const btn = document.createElement('button');
+        btn.textContent = '✕ Close snipe tab';
+        Object.assign(btn.style, {
+            position: 'fixed', top: '8px', right: '8px', zIndex: '99999',
+            padding: '7px 16px', background: '#c44', color: '#fff',
+            border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px',
+        });
+        btn.onclick = () => window.close();
+        document.body ? document.body.appendChild(btn)
+            : document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+        return;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Get current server epoch ms (TW keeps Timing in sync with the server clock).
+    function getServerTime() {
+        return (typeof Timing !== 'undefined' && Timing.getCurrentServerTime)
+            ? Timing.getCurrentServerTime()
+            : Date.now();
+    }
+
+    // Parse a server-local datetime string ("2026-05-14 06:41:59.818") → epoch ms.
+    // TW's server_utc_diff is in seconds (e.g. 7200 for UTC+2).
+    const serverUtcDiff = (window.game_data && window.game_data.server_utc_diff) || 0;
+    function parseServerDate(s) {
+        // Treat the string as UTC then subtract the server's UTC offset to get true epoch.
+        return new Date(s.trim().replace(' ', 'T') + 'Z').getTime() - serverUtcDiff * 1000;
+    }
+
+    // ── 1. MEMO PAGE — intercept "klin" link clicks, store timing ─────────────
+    if (screen === 'memo') {
+        document.addEventListener('click', (e) => {
+            const link = e.target.closest('table.vis.bbcodetable a[href*="screen=place"]');
+            if (!link) return;
+
+            const row = link.closest('tr');
+            if (!row) return;
+
+            // Table columns: numer | unique_id | min_time | max_time | link | arrival | (empty)
+            const cells = row.querySelectorAll('td');
+            if (cells.length < 6) return;
+
+            try {
+                const min_ms  = parseServerDate(cells[2].textContent);
+                const max_ms  = parseServerDate(cells[3].textContent); // textContent strips <b>
+                const arr_ms  = parseServerDate(cells[5].textContent);
+
+                localStorage.setItem(SNIPE_KEY, JSON.stringify({
+                    arrival_ms: arr_ms,
+                    min_ms,
+                    max_ms,
+                    stored_at: Date.now(),
+                }));
+            } catch (err) {
+                console.error('[Kliny Sniper] Failed to parse snipe row:', err);
+            }
+            // Do NOT preventDefault — let the link open in its new tab normally.
+        }, true /* capture phase */);
+    }
+
+    // ── 2. PLACE PAGE (screen=place, no try=confirm) — auto-click support ─────
+    //    The klin link opens screen=place with troops pre-filled from the simulator.
+    //    We auto-click the "Send support" button to proceed to the confirm page.
+    else if (screen === 'place' && !tryParam) {
+        const data = loadStoredData();
+        if (!data) return;
+
+        const doSubmit = () => {
+            // "support" is the name attribute of the support submit button in TW.
+            const btn = document.querySelector('input[name="support"]')
+                || document.querySelector('#command-data-form input[type="submit"]')
+                || document.querySelector('form input[type="submit"]');
+            if (btn) {
+                btn.click();
+            } else {
+                console.warn('[Kliny Sniper] Support button not found on place page');
+            }
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => setTimeout(doSubmit, 400));
+        } else {
+            setTimeout(doSubmit, 400);
+        }
+    }
+
+    // ── 3. CONFIRM PAGE (screen=place&try=confirm) — timing worker ────────────
+    else if (screen === 'place' && tryParam === 'confirm') {
+        const data = loadStoredData(/* consume */ true);
+        if (!data) return;
+
+        const { arrival_ms, min_ms, max_ms } = data;
+        const gap_ms = max_ms - min_ms;
+
+        // How many ms before the noble's arrival should our snipe arrive?
+        const margin = gap_ms < 2000
+            ? 50  + Math.floor(Math.random() * 100)  // tight window → 50–150 ms
+            : 400 + Math.floor(Math.random() * 600);  // wide window  → 400–1000 ms
+
+        const targetArrival = arrival_ms - margin;
+
+        const init = () => {
+            // Find TW's confirm/submit button.
+            const confirmBtn = document.getElementById('troop_confirm_go')
+                || document.querySelector('#command-data-form input[type="submit"]')
+                || document.querySelector('input[type="submit"]');
+
+            if (!confirmBtn) {
+                console.error('[Kliny Sniper] Cannot find confirm button on try=confirm page');
+                return;
+            }
+
+            // Read the travel time (HH:MM:SS) from the confirm form table.
+            // timing.js uses: $('#date_arrival').parent().prev().find('td').eq(1).text()
+            let travelMs = 0;
+            const $ = window.jQuery;
+            if ($) {
+                const tStr = $('#date_arrival').parent().prev().find('td').eq(1).text().trim();
+                const p = tStr.split(':');
+                if (p.length === 3) travelMs = (+p[0] * 3600 + +p[1] * 60 + +p[2]) * 1000;
+            }
+            // Fallback: scan all table rows for a bare HH:MM:SS value.
+            if (!travelMs) {
+                document.querySelectorAll('tr').forEach(tr => {
+                    if (travelMs) return;
+                    const tds = tr.querySelectorAll('td');
+                    if (tds.length >= 2) {
+                        const m = tds[1].textContent.trim().match(/^(\d+):(\d+):(\d+)$/);
+                        if (m) travelMs = (+m[1] * 3600 + +m[2] * 60 + +m[3]) * 1000;
+                    }
+                });
+            }
+
+            // targetSend: moment we need to click confirm so the snipe arrives at targetArrival.
+            const targetSend = targetArrival - travelMs;
+            const now = getServerTime();
+
+            const ui = showOverlay(margin, gap_ms, arrival_ms);
+
+            if (targetSend < now - 3000) {
+                ui.innerHTML = `<b style="color:#f66">⚠ Too late!<br>Send time was in the past.<br>Gap: ${gap_ms} ms, margin: ${margin} ms</b>`;
+                return;
+            }
+
+            launchWorker(targetSend, confirmBtn, ui);
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    function loadStoredData(consume = false) {
+        const raw = localStorage.getItem(SNIPE_KEY);
+        if (!raw) return null;
+        let data;
+        try { data = JSON.parse(raw); } catch { localStorage.removeItem(SNIPE_KEY); return null; }
+        if (Date.now() - data.stored_at > TTL_MS) {
+            localStorage.removeItem(SNIPE_KEY);
+            return null;
+        }
+        if (consume) localStorage.removeItem(SNIPE_KEY);
+        return data;
+    }
+
+    // ── Worker: tight 1 ms loop that fires confirmBtn at exactly targetSend ───
+    function launchWorker(targetSend, confirmBtn, uiEl) {
+        // Worker source uses setTimeout(loop, 1) — no async/await for broad compat.
+        const src = `
+var st = 0, lt = 0, ticks = 0, delay = 0, ping = 30, waitPing = false, done = false;
+
+self.onmessage = function(e) {
+    var d = e.data;
+    if      (d.cmd === 'start') { st = d.t; lt = d.t; loop(d.target); }
+    else if (d.cmd === 'time')  { st = d.t; }
+    else if (d.cmd === 'ping')  { ping = d.p; waitPing = false; }
+};
+
+function loop(target) {
+    setTimeout(function tick() {
+        if (done) return;
+        postMessage({ cmd: 'getTime' });
+        var avg = ticks > 0 ? delay / ticks : 0;
+        var rem = (target + ping - avg) - st;
+        if (!waitPing && rem <= 20000 && rem >= 15000) {
+            waitPing = true;
+            postMessage({ cmd: 'getPing' });
+        }
+        if (rem <= 0) {
+            done = true;
+            postMessage({ cmd: 'fire' });
+            return;
+        }
+        ticks++;
+        delay += st - lt;
+        lt = st;
+        if (ticks % 50 === 0) postMessage({ cmd: 'tick', rem: rem });
+        setTimeout(tick, 1);
+    }, 1);
+}
+        `;
+
+        const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+
+        // Ping estimation: image requests × 0.3 (one-way, same as timing.js).
+        let pingCache = null;
+        function measurePing(cb) {
+            if (pingCache !== null) { cb(pingCache); return; }
+            let n = 0, sum = 0;
+            (function next() {
+                const t = Date.now();
+                const img = new Image();
+                img.onload = img.onerror = () => {
+                    sum += (Date.now() - t) * 0.3;
+                    if (++n >= 5) { pingCache = sum / n; cb(pingCache); }
+                    else setTimeout(next, 1000);
+                };
+                img.src = 'game.php?_kliny=' + Math.random();
+            })();
+        }
+
+        const cdEl = uiEl && uiEl.querySelector('#kliny-cd');
+
+        worker.postMessage({ cmd: 'start', target: targetSend, t: getServerTime() });
+
+        worker.onmessage = (e) => {
+            switch (e.data.cmd) {
+                case 'getTime':
+                    worker.postMessage({ cmd: 'time', t: getServerTime() });
+                    break;
+                case 'tick':
+                    if (cdEl) cdEl.textContent = (Math.max(0, e.data.rem) / 1000).toFixed(2) + 's';
+                    break;
+                case 'getPing':
+                    measurePing(p => worker.postMessage({ cmd: 'ping', p }));
+                    break;
+                case 'fire':
+                    confirmBtn.click();
+                    worker.terminate();
+                    if (uiEl) uiEl.innerHTML = '<div style="color:#4f4;font-size:14px;padding:4px">✓ Snipe sent!</div>';
+                    // Signal next page load to close this tab.
+                    sessionStorage.setItem(CLOSE_KEY, '1');
+                    break;
+            }
+        };
+    }
+
+    // ── Overlay shown on try=confirm page ─────────────────────────────────────
+    function showOverlay(margin, gap_ms, arrival_ms) {
+        const arrStr = new Date(arrival_ms).toISOString().replace('T', ' ').slice(0, 23) + ' UTC';
+        const el = document.createElement('div');
+        el.innerHTML = `
+            <div style="font-weight:bold;color:#fff;margin-bottom:6px">⚔ Kliny Auto-Sniper</div>
+            Noble arrives: <b>${arrStr}</b><br>
+            Gap: ${gap_ms} ms → margin: <b>${margin} ms</b><br>
+            Firing in: <span id="kliny-cd" style="color:#4f4;font-size:14px">…</span>
+        `;
+        Object.assign(el.style, {
+            position: 'fixed', top: '60px', right: '16px',
+            background: '#1a1a1a', color: '#ccc',
+            border: '1px solid #555', borderRadius: '6px',
+            padding: '12px 16px', zIndex: '99999',
+            fontSize: '12px', fontFamily: 'monospace',
+            lineHeight: '1.8', boxShadow: '0 4px 16px rgba(0,0,0,.6)',
+        });
+        document.body.appendChild(el);
+        return el;
+    }
+
+})();
