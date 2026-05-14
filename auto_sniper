@@ -60,11 +60,50 @@
     }
 
     // Parse a server-local datetime string ("2026-05-14 06:41:59.818") → epoch ms.
-    // TW's server_utc_diff is in seconds (e.g. 7200 for UTC+2).
-    const serverUtcDiff = (window.game_data && window.game_data.server_utc_diff) || 0;
+    // Use game_data.server_utc_diff (seconds) when available; otherwise derive the
+    // UTC offset from the hostname using an IANA timezone map (handles DST correctly).
+    const DOMAIN_TZ = {
+        'plemiona.pl':        'Europe/Warsaw',
+        'tribalwars.net':     'Europe/Berlin',
+        'die-staemme.de':     'Europe/Berlin',
+        'staemme.ch':         'Europe/Zurich',
+        'tribalwars.nl':      'Europe/Amsterdam',
+        'tribalwars.co.uk':   'Europe/London',
+        'tribalwars.us':      'America/New_York',
+        'tribalwars.com.pt':  'Europe/Lisbon',
+        'tribalwars.com.br':  'America/Sao_Paulo',
+        'divokekmeny.cz':     'Europe/Prague',
+        'tribals.it':         'Europe/Rome',
+        'guerretribale.fr':   'Europe/Paris',
+        'guerrastribales.es': 'Europe/Madrid',
+    };
+
+    function getServerUtcOffsetMs() {
+        // Prefer the value TW exposes at runtime (already DST-aware, in seconds).
+        if (window.game_data && typeof window.game_data.server_utc_diff === 'number') {
+            return window.game_data.server_utc_diff * 1000;
+        }
+        // Fallback: derive from hostname via Intl API (DST-aware).
+        const host = location.hostname; // e.g. "es100.guerrastribales.es"
+        const tld  = Object.keys(DOMAIN_TZ).find(d => host.endsWith('.' + d) || host === d);
+        if (!tld) return 0;
+        const tz = DOMAIN_TZ[tld];
+        // Get the UTC offset for the timezone right now by comparing a formatted
+        // UTC time to a formatted local time for the target timezone.
+        const now = Date.now();
+        const utcStr  = new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC',    hour12: false,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);
+        const tzStr   = new Intl.DateTimeFormat('en-CA', { timeZone: tz,       hour12: false,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);
+        return new Date(tzStr.replace(', ', 'T')).getTime() - new Date(utcStr.replace(', ', 'T')).getTime();
+    }
+
     function parseServerDate(s) {
-        // Treat the string as UTC then subtract the server's UTC offset to get true epoch.
-        return new Date(s.trim().replace(' ', 'T') + 'Z').getTime() - serverUtcDiff * 1000;
+        // Parse as UTC, then shift by the server's UTC offset → true epoch ms.
+        const utcEpoch = new Date(s.trim().replace(' ', 'T') + 'Z').getTime();
+        return utcEpoch - getServerUtcOffsetMs();
     }
 
     // ── 1. MEMO PAGE — intercept "klin" link clicks, store timing ─────────────
@@ -130,14 +169,6 @@
         if (!data) return;
 
         const { arrival_ms, min_ms, max_ms } = data;
-        const gap_ms = max_ms - min_ms;
-
-        // How many ms before the noble's arrival should our snipe arrive?
-        const margin = gap_ms < 2000
-            ? 50  + Math.floor(Math.random() * 100)  // tight window → 50–150 ms
-            : 400 + Math.floor(Math.random() * 600);  // wide window  → 400–1000 ms
-
-        const targetArrival = arrival_ms - margin;
 
         const init = () => {
             // Find TW's confirm/submit button.
@@ -150,35 +181,18 @@
                 return;
             }
 
-            // Read the travel time (HH:MM:SS) from the confirm form table.
-            // timing.js uses: $('#date_arrival').parent().prev().find('td').eq(1).text()
-            let travelMs = 0;
-            const $ = window.jQuery;
-            if ($) {
-                const tStr = $('#date_arrival').parent().prev().find('td').eq(1).text().trim();
-                const p = tStr.split(':');
-                if (p.length === 3) travelMs = (+p[0] * 3600 + +p[1] * 60 + +p[2]) * 1000;
-            }
-            // Fallback: scan all table rows for a bare HH:MM:SS value.
-            if (!travelMs) {
-                document.querySelectorAll('tr').forEach(tr => {
-                    if (travelMs) return;
-                    const tds = tr.querySelectorAll('td');
-                    if (tds.length >= 2) {
-                        const m = tds[1].textContent.trim().match(/^(\d+):(\d+):(\d+)$/);
-                        if (m) travelMs = (+m[1] * 3600 + +m[2] * 60 + +m[3]) * 1000;
-                    }
-                });
-            }
-
-            // targetSend: moment we need to click confirm so the snipe arrives at targetArrival.
-            const targetSend = targetArrival - travelMs;
+            // Target the midpoint of [min_ms, max_ms].
+            // If the gap is > 1 s, use 500 ms before max; otherwise split the gap exactly.
+            const gap_ms = max_ms - min_ms;
+            const targetSend = gap_ms > 1000
+                ? max_ms - 500
+                : min_ms + Math.round(gap_ms / 2);
             const now = getServerTime();
 
-            const ui = showOverlay(margin, gap_ms, arrival_ms);
+            const ui = showOverlay(targetSend, arrival_ms);
 
             if (targetSend < now - 3000) {
-                ui.innerHTML = `<b style="color:#f66">⚠ Too late!<br>Send time was in the past.<br>Gap: ${gap_ms} ms, margin: ${margin} ms</b>`;
+                ui.innerHTML = `<b style="color:#f66">⚠ Too late!<br>Send time was in the past.</b>`;
                 return;
             }
 
@@ -211,11 +225,11 @@
     function launchWorker(targetSend, confirmBtn, uiEl) {
         // Worker source uses setTimeout(loop, 1) — no async/await for broad compat.
         const src = `
-var st = 0, lt = 0, ticks = 0, delay = 0, ping = 30, waitPing = false, done = false;
+var st = 0, ping = 30, waitPing = false, done = false, ticks = 0;
 
 self.onmessage = function(e) {
     var d = e.data;
-    if      (d.cmd === 'start') { st = d.t; lt = d.t; loop(d.target); }
+    if      (d.cmd === 'start') { st = d.t; loop(d.target); }
     else if (d.cmd === 'time')  { st = d.t; }
     else if (d.cmd === 'ping')  { ping = d.p; waitPing = false; }
 };
@@ -224,8 +238,8 @@ function loop(target) {
     setTimeout(function tick() {
         if (done) return;
         postMessage({ cmd: 'getTime' });
-        var avg = ticks > 0 ? delay / ticks : 0;
-        var rem = (target + ping - avg) - st;
+        // Fire ping ms early so the request arrives at the server at target time.
+        var rem = (target - ping) - st;
         if (!waitPing && rem <= 20000 && rem >= 15000) {
             waitPing = true;
             postMessage({ cmd: 'getPing' });
@@ -236,8 +250,6 @@ function loop(target) {
             return;
         }
         ticks++;
-        delay += st - lt;
-        lt = st;
         if (ticks % 50 === 0) postMessage({ cmd: 'tick', rem: rem });
         setTimeout(tick, 1);
     }, 1);
@@ -290,13 +302,20 @@ function loop(target) {
     }
 
     // ── Overlay shown on try=confirm page ─────────────────────────────────────
-    function showOverlay(margin, gap_ms, arrival_ms) {
-        const arrStr = new Date(arrival_ms).toISOString().replace('T', ' ').slice(0, 23) + ' UTC';
+    function toServerTimeStr(epochMs) {
+        // Shift epoch by the server's UTC offset so toISOString gives server-local time.
+        return new Date(epochMs + getServerUtcOffsetMs())
+            .toISOString().replace('T', ' ').slice(0, 23);
+    }
+
+    function showOverlay(sendAt_ms, arrival_ms) {
+        const sendStr = toServerTimeStr(sendAt_ms);
+        const arrStr  = toServerTimeStr(arrival_ms);
         const el = document.createElement('div');
         el.innerHTML = `
             <div style="font-weight:bold;color:#fff;margin-bottom:6px">⚔ Kliny Auto-Sniper</div>
-            Noble arrives: <b>${arrStr}</b><br>
-            Gap: ${gap_ms} ms → margin: <b>${margin} ms</b><br>
+            Noble arrives: <b>${arrStr}</b> (server)<br>
+            Sending at: <b>${sendStr}</b> (server)<br>
             Firing in: <span id="kliny-cd" style="color:#4f4;font-size:14px">…</span>
         `;
         Object.assign(el.style, {
