@@ -1,0 +1,829 @@
+// ==UserScript==
+// @name         Kliny Uploader
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  Upload TW attacks & army overview to a local Kliny instance
+// @author       You
+// @match        https://*.plemiona.pl/*
+// @match        https://*.tribalwars.net/*
+// @match        https://*.die-staemme.de/*
+// @match        https://*.staemme.ch/*
+// @match        https://*.tribalwars.nl/*
+// @match        https://*.tribalwars.co.uk/*
+// @match        https://*.tribalwars.us/*
+// @match        https://*.tribalwars.com.pt/*
+// @match        https://*.tribalwars.com.br/*
+// @match        https://*.divokekmeny.cz/*
+// @match        https://*.tribals.it/*
+// @match        https://*.guerretribale.fr/*
+// @match        https://*.guerrastribales.es/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
+// @connect      localhost
+// @connect      127.0.0.1
+// @connect      tribalwars-snipes.net
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ── Page detection ────────────────────────────────────────────────────────
+    // Attacks upload: game.php?...&screen=reqdef
+    //   (the "request for defence" page — has a BB-code textarea with incoming attacks)
+    // Army overview:  game.php?...&screen=overview_villages&mode=combined
+    const params  = new URLSearchParams(location.search);
+    const screen  = params.get('screen');
+    const mode    = params.get('mode');
+
+    const isReqdef    = screen === 'reqdef';
+    const isCombined  = screen === 'overview_villages' && mode === 'combined';
+    const isMemo      = screen === 'memo';
+    if (!isReqdef && !isCombined && !isMemo) return;
+
+    // ── Settings (persisted via Tampermonkey storage) ─────────────────────────
+    let API_BASE    = GM_getValue('kliny_api_base',    'tribalwars-snipes.net');
+    let API_KEY     = GM_getValue('kliny_api_key',     '');
+    // Snipe-size overrides — sent with every attacks upload so the player
+    // can customise them without touching the server web UI.
+    // 0 means "use the value stored in the server DB instead".
+    let SNIPE_SMALL  = GM_getValue('kliny_snipe_small',  1000);
+    let SNIPE_MEDIUM = GM_getValue('kliny_snipe_medium', 2000);
+    let SNIPE_LARGE  = GM_getValue('kliny_snipe_large',  5000);
+
+    // ── Extract world from hostname (e.g. es100.tribalwars.es → "es100") ─────
+    const world = location.hostname.split('.')[0];
+
+    // ── Upload raw attacks text to API ────────────────────────────────────────
+    function uploadRawText(text) {
+        if (!API_KEY) {
+            showToast('Kliny: no API key set. Click the ⚙ button to configure.', 'error');
+            return;
+        }
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: `${API_BASE}/api/v1/upload_attacks_raw`,
+            headers: {
+                'Content-Type':  'application/json',
+                'Authorization': `Bearer ${API_KEY}`,
+            },
+            data: JSON.stringify({
+                world, text,
+                // 0 = use server-DB defaults; non-zero overrides per-upload
+                ...(SNIPE_SMALL  > 0 && { small:  SNIPE_SMALL  }),
+                ...(SNIPE_MEDIUM > 0 && { medium: SNIPE_MEDIUM }),
+                ...(SNIPE_LARGE  > 0 && { large:  SNIPE_LARGE  }),
+            }),
+            onload(resp) {
+                try {
+                    const json = JSON.parse(resp.responseText);
+                    if (json.success) {
+                        showToast(`✓ Uploaded ${json.inserted} attacks to world ${json.world}`, 'success');
+                    } else {
+                        showToast(`✗ Error: ${json.error}`, 'error');
+                    }
+                } catch {
+                    showToast(`✗ Unexpected response (${resp.status})`, 'error');
+                }
+            },
+            onerror() {
+                showToast(`✗ Could not reach ${API_BASE} — is the server running?`, 'error');
+            },
+        });
+    }
+
+    // ── Settings panel ────────────────────────────────────────────────────────
+    function openSettings() {
+        const existing = document.getElementById('kliny-settings-panel');
+        if (existing) { existing.remove(); return; }
+
+        const panel = document.createElement('div');
+        panel.id = 'kliny-settings-panel';
+        panel.innerHTML = `
+            <div style="font-weight:bold;margin-bottom:8px">⚙ Kliny Settings</div>
+            <label style="display:block;margin-bottom:4px">API Base URL:<br>
+                <input id="kliny-base-input" type="text" value="${API_BASE}"
+                    style="width:260px;padding:3px;margin-top:2px" />
+            </label>
+            <label style="display:block;margin-bottom:8px">API Key:<br>
+                <input id="kliny-key-input" type="text" value="${API_KEY}"
+                    style="width:260px;padding:3px;margin-top:2px" placeholder="Paste key from Profile Settings" />
+            </label>
+            <div style="border-top:1px solid #444;margin:8px 0 6px"></div>
+            <div style="font-size:11px;color:#888;margin-bottom:6px">
+                Snipe-size overrides sent with attacks upload.<br>
+                Leave <b>0</b> to use the values stored in your server account settings.
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+                <label style="flex:1">Small:<br>
+                    <input id="kliny-small-input" type="number" min="0" value="${SNIPE_SMALL}"
+                        style="width:100%;padding:3px;margin-top:2px" /></label>
+                <label style="flex:1">Medium / Noble:<br>
+                    <input id="kliny-medium-input" type="number" min="0" value="${SNIPE_MEDIUM}"
+                        style="width:100%;padding:3px;margin-top:2px" /></label>
+                <label style="flex:1">Large:<br>
+                    <input id="kliny-large-input" type="number" min="0" value="${SNIPE_LARGE}"
+                        style="width:100%;padding:3px;margin-top:2px" /></label>
+            </div>
+            <button type="button" id="kliny-save-settings"
+                style="padding:4px 12px;cursor:pointer;background:#4a7;color:#fff;border:none;border-radius:3px">
+                Save
+            </button>
+        `;
+        Object.assign(panel.style, {
+            position: 'fixed', top: '80px', right: '16px',
+            background: '#1e1e1e', color: '#ddd',
+            border: '1px solid #555', borderRadius: '6px',
+            padding: '14px', zIndex: '99999', fontSize: '13px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+        });
+        document.body.appendChild(panel);
+
+        document.getElementById('kliny-save-settings').addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            API_BASE     = document.getElementById('kliny-base-input').value.replace(/\/$/, '');
+            API_KEY      = document.getElementById('kliny-key-input').value.trim();
+            SNIPE_SMALL  = parseInt(document.getElementById('kliny-small-input').value,  10) || 0;
+            SNIPE_MEDIUM = parseInt(document.getElementById('kliny-medium-input').value, 10) || 0;
+            SNIPE_LARGE  = parseInt(document.getElementById('kliny-large-input').value,  10) || 0;
+            GM_setValue('kliny_api_base',    API_BASE);
+            GM_setValue('kliny_api_key',     API_KEY);
+            GM_setValue('kliny_snipe_small',  SNIPE_SMALL);
+            GM_setValue('kliny_snipe_medium', SNIPE_MEDIUM);
+            GM_setValue('kliny_snipe_large',  SNIPE_LARGE);
+            panel.remove();
+            showToast('Settings saved', 'success');
+        });
+    }
+
+    // ── Parse attacks from reqdef (screen=reqdef) BB-code textarea ────────────
+    // Server-side Parser.upload_attacks() handles all the BB-code parsing,
+    // so we only need to read the textarea and count preview lines here.
+    function getReqdefText() {
+        const textarea = document.querySelector('textarea');
+        if (!textarea) {
+            showToast('Kliny: could not find the request textarea.', 'error');
+            return null;
+        }
+        const text = textarea.value || '';
+        if (!text.trim()) {
+            showToast('Kliny: the request textarea is empty.', 'error');
+            return null;
+        }
+        return text;
+    }
+
+    // ── Army HTML extraction (mode=combined) ──────────────────────────────────
+    // Grabs the raw outerHTML of #combined_table so the server can parse it
+    // correctly, avoiding any JS-side extraction bugs.
+    function getArmyRawHTML() {
+        const table = document.getElementById('combined_table');
+        if (!table) {
+            showToast('Kliny: could not find #combined_table on this page.', 'error');
+            return null;
+        }
+        const html = table.outerHTML;
+        if (!html || html.length < 100) {
+            showToast('Kliny: #combined_table appears empty.', 'error');
+            return null;
+        }
+        return html;
+    }
+
+    // ── Upload raw army HTML to API ───────────────────────────────────────────
+    function uploadRawArmy(armyHtml) {
+        if (!API_KEY) {
+            showToast('Kliny: no API key set. Click the ⚙ button to configure.', 'error');
+            return;
+        }
+        GM_xmlhttpRequest({
+            method:  'POST',
+            url:     `${API_BASE}/api/v1/upload_army_raw`,
+            headers: {
+                'Content-Type':  'application/json',
+                'Authorization': `Bearer ${API_KEY}`,
+            },
+            data: JSON.stringify({ world, army_html: armyHtml }),
+            onload(resp) {
+                try {
+                    const json = JSON.parse(resp.responseText);
+                    if (json.success) {
+                        showToast(`✓ Army uploaded for ${json.world} (${json.villages} villages)`, 'success');
+                    } else {
+                        showToast(`✗ Error: ${json.error}`, 'error');
+                    }
+                } catch {
+                    showToast(`✗ Unexpected response (${resp.status})`, 'error');
+                }
+            },
+            onerror() {
+                showToast(`✗ Could not reach ${API_BASE} — is the server running?`, 'error');
+            },
+        });
+    }
+
+    // ── Shared confirmation modal ─────────────────────────────────────────────
+    function escapeHtml(str) {
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    /**
+     * showConfirmModal({ title, metaItems, lastSendKey, previewLines, confirmLabel, onConfirm })
+     *   metaItems   – array of raw HTML strings for the meta row
+     *   lastSendKey – GM storage key for last-send timestamp
+     *   previewLines – array of plain strings to show in the preview box
+     */
+    function showConfirmModal({ title, metaItems, lastSendKey, previewLines, confirmLabel, onConfirm }) {
+        const existing = document.getElementById('kliny-confirm-modal');
+        if (existing) existing.remove();
+
+        const lastSendTs = GM_getValue(lastSendKey, null);
+        const lastSendStr = lastSendTs
+            ? `Last upload: <b>${new Date(lastSendTs).toLocaleString()}</b>`
+            : 'No previous upload on record';
+
+        const previewHtml = previewLines.slice(0, 5)
+            .map(l => `<div class="kliny-prev-row">${escapeHtml(l)}</div>`)
+            .join('');
+        const moreHtml = previewLines.length > 5
+            ? `<div class="kliny-prev-more">…and ${previewLines.length - 5} more rows</div>`
+            : '';
+
+        const overlay = document.createElement('div');
+        overlay.id = 'kliny-confirm-modal';
+        overlay.innerHTML = `
+            <div id="kliny-modal-box">
+                <div id="kliny-modal-title">${escapeHtml(title)}</div>
+                <div id="kliny-modal-meta">
+                    ${metaItems.map(i => `<span>${i}</span>`).join('')}
+                </div>
+                <div id="kliny-modal-last">${lastSendStr}</div>
+                <div id="kliny-modal-preview">
+                    <div class="kliny-prev-header">Preview:</div>
+                    ${previewHtml}${moreHtml}
+                </div>
+                <div id="kliny-modal-buttons">
+                    <button type="button" id="kliny-modal-cancel">✕ Cancel</button>
+                    <button type="button" id="kliny-modal-confirm">${escapeHtml(confirmLabel)}</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        document.getElementById('kliny-modal-cancel').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); overlay.remove(); });
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('kliny-modal-confirm').addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            overlay.remove();
+            GM_setValue(lastSendKey, Date.now());
+            onConfirm();
+        });
+    }
+
+    function showArmyConfirmModal(armyHtml, onConfirm) {
+        // Count village rows by matching coordinates in the HTML
+        const coordMatches = armyHtml.match(/\(\d{1,3}\|\d{1,3}\)/g) || [];
+        const villageCount = coordMatches.length;
+        showConfirmModal({
+            title: '⬆ Upload Army to Kliny',
+            metaItems: [
+                `World: <b>${escapeHtml(world)}</b>`,
+                `<b>${villageCount}</b> village(s) detected`,
+                `Raw HTML — parsed server-side`,
+            ],
+            lastSendKey: 'kliny_army_last_send',
+            previewLines: coordMatches.slice(0, 10).map(c => `Village at ${c}`),
+            confirmLabel: '✓ Confirm & Upload',
+            onConfirm,
+        });
+    }
+
+    function showReqdefConfirmModal(text, onConfirm) {
+        // Count attack lines for the meta badge, but preview the full text
+        const attackLines = text.split('\n').filter(l => /\[command\]attack/.test(l));
+        const previewLines = text.split('\n').filter(l => l.trim());
+        showConfirmModal({
+            title: '⬆ Upload Attacks to Kliny',
+            metaItems: [
+                `World: <b>${escapeHtml(world)}</b>`,
+                `<b>${attackLines.length}</b> attack line(s) detected`,
+            ],
+            lastSendKey: 'kliny_attacks_last_send',
+            previewLines,
+            confirmLabel: '✓ Confirm & Upload',
+            onConfirm,
+        });
+    }
+
+    // ── Toast notification ────────────────────────────────────────────────────
+    function showToast(msg, type = 'success', duration = 4000) {
+        const toast = document.createElement('div');
+        // Support multi-line messages
+        toast.innerHTML = msg.split('\n').map(escapeHtml).join('<br>');
+        Object.assign(toast.style, {
+            position: 'fixed', bottom: '20px', right: '20px',
+            background: type === 'success' ? '#2a7' : '#c44',
+            color: '#fff', padding: '10px 18px', borderRadius: '5px',
+            fontSize: '13px', zIndex: '999999', maxWidth: '380px',
+            boxShadow: '0 3px 10px rgba(0,0,0,0.4)',
+            transition: 'opacity 0.5s', lineHeight: '1.5',
+        });
+        document.body.appendChild(toast);
+        setTimeout(() => { toast.style.opacity = '0'; }, duration);
+        setTimeout(() => toast.remove(), duration + 700);
+    }
+
+    // ── Styles ────────────────────────────────────────────────────────────────
+    GM_addStyle(`
+        /* ── Toolbar ── */
+        #kliny-bar {
+            position: fixed; top: 60px; left: 8px; z-index: 9999;
+            display: flex; gap: 8px; align-items: center;
+            background: rgba(20,20,20,0.82);
+            padding: 6px 10px; border-radius: 6px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.45);
+        }
+        #kliny-bar button {
+            padding: 5px 14px; border: none; border-radius: 4px;
+            font-size: 13px; cursor: pointer; font-weight: bold;
+        }
+        #kliny-upload-btn  { background: #3a6dbf; color: #fff; }
+        #kliny-upload-btn:hover  { background: #2a5da0; }
+        #kliny-army-btn    { background: #2a8a4a; color: #fff; }
+        #kliny-army-btn:hover    { background: #1f6e3b; }
+        #kliny-settings-btn { background: #555; color: #fff; }
+        #kliny-settings-btn:hover { background: #333; }
+        #kliny-count { font-size:12px; color:#888; }
+
+        /* ── Confirmation modal ── */
+        #kliny-confirm-modal {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.65);
+            z-index: 999998;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #kliny-modal-box {
+            background: #1e1e1e; color: #ddd;
+            border: 1px solid #555; border-radius: 8px;
+            padding: 20px 24px; width: 460px; max-width: 95vw;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+            font-size: 13px;
+        }
+        #kliny-modal-title {
+            font-size: 16px; font-weight: bold; margin-bottom: 12px;
+            color: #fff;
+        }
+        #kliny-modal-meta {
+            display: flex; gap: 16px; margin-bottom: 6px; color: #bbb;
+        }
+        #kliny-modal-last {
+            font-size: 11px; color: #888; margin-bottom: 10px;
+        }
+        #kliny-modal-preview {
+            background: #111; border: 1px solid #333; border-radius: 4px;
+            padding: 8px 10px; margin-bottom: 16px;
+            max-height: 150px; overflow-y: auto;
+            font-family: monospace; font-size: 11px;
+        }
+        .kliny-prev-header { color: #777; margin-bottom: 4px; font-size:11px; }
+        .kliny-prev-row { color: #9cf; padding: 1px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .kliny-prev-more { color: #666; font-style: italic; margin-top: 4px; }
+        #kliny-modal-buttons {
+            display: flex; gap: 10px; justify-content: flex-end;
+        }
+        #kliny-modal-cancel {
+            padding: 6px 16px; border: 1px solid #666; border-radius: 4px;
+            background: transparent; color: #ccc; cursor: pointer; font-size: 13px;
+        }
+        #kliny-modal-cancel:hover { background: #333; }
+        #kliny-modal-confirm {
+            padding: 6px 18px; border: none; border-radius: 4px;
+            background: #2a8a4a; color: #fff; cursor: pointer;
+            font-size: 13px; font-weight: bold;
+        }
+        #kliny-modal-confirm:hover { background: #1f6e3b; }
+
+        /* ── Snipe Generator Panel (memo page) ── */
+        #kliny-snipe-panel {
+            position: fixed; top: 60px; right: 16px; z-index: 9999;
+            background: #1a1a1a; color: #ddd;
+            border: 1px solid #444; border-radius: 8px;
+            padding: 16px 18px; width: 310px;
+            box-shadow: 0 4px 18px rgba(0,0,0,0.55);
+            font-size: 13px;
+        }
+        #kliny-snipe-panel h3 {
+            margin: 0 0 12px; font-size: 14px; color: #fff;
+            border-bottom: 1px solid #333; padding-bottom: 6px;
+        }
+        .kliny-field { margin-bottom: 10px; }
+        .kliny-field label { display: block; margin-bottom: 3px; color: #aaa; font-size: 12px; }
+        .kliny-field input, .kliny-field select {
+            width: 100%; box-sizing: border-box;
+            background: #111; color: #eee;
+            border: 1px solid #444; border-radius: 4px;
+            padding: 5px 7px; font-size: 12px;
+        }
+        .kliny-field input:focus, .kliny-field select:focus { outline: none; border-color: #666; }
+        #kliny-player-field { display: none; }
+        #kliny-players-list {
+            max-height: 120px; overflow-y: auto;
+            border: 1px solid #333; border-radius: 4px;
+            background: #111; padding: 4px;
+        }
+        #kliny-players-list label {
+            display: flex; align-items: center; gap: 6px;
+            padding: 2px 4px; cursor: pointer; border-radius: 3px; color: #ccc;
+        }
+        #kliny-players-list label:hover { background: #222; }
+        #kliny-snipe-actions { display: flex; gap: 8px; margin-top: 14px; }
+        #kliny-generate-btn {
+            flex: 1; padding: 7px 0; border: none; border-radius: 4px;
+            background: #2a8a4a; color: #fff; font-weight: bold;
+            font-size: 13px; cursor: pointer;
+        }
+        #kliny-generate-btn:hover { background: #1f6e3b; }
+        #kliny-generate-btn:disabled { background: #444; color: #888; cursor: not-allowed; }
+        #kliny-panel-settings-btn {
+            padding: 7px 12px; border: 1px solid #555; border-radius: 4px;
+            background: transparent; color: #aaa; cursor: pointer; font-size: 13px;
+        }
+        #kliny-panel-settings-btn:hover { background: #2a2a2a; }
+        #kliny-status { margin-top: 8px; font-size: 12px; color: #888; min-height: 16px; }
+
+        /* ── Snipe Results Modal ── */
+        #kliny-results-modal {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 999999;
+            display: flex; align-items: center; justify-content: center;
+        }
+        #kliny-results-box {
+            background: #1e1e1e; color: #ddd;
+            border: 1px solid #555; border-radius: 8px;
+            padding: 20px 24px; width: 560px; max-width: 96vw;
+            max-height: 90vh; overflow-y: auto;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+            font-size: 13px;
+        }
+        #kliny-results-box h3 { margin: 0 0 12px; font-size: 15px; color: #fff; }
+        .kliny-note-block {
+            background: #111; border: 1px solid #333; border-radius: 4px;
+            padding: 8px 10px; margin-bottom: 10px;
+            font-family: monospace; font-size: 11px;
+            white-space: pre-wrap; word-break: break-all;
+            max-height: 160px; overflow-y: auto; color: #9cf;
+        }
+        .kliny-copy-btn {
+            margin-top: 4px; padding: 4px 12px;
+            border: 1px solid #555; border-radius: 3px;
+            background: #2a2a2a; color: #ccc;
+            cursor: pointer; font-size: 12px;
+        }
+        .kliny-copy-btn:hover { background: #333; }
+        .kliny-copy-btn.copied { background: #2a8a4a; color: #fff; border-color: #2a8a4a; }
+        #kliny-results-close {
+            display: block; margin-top: 14px;
+            padding: 7px 20px; border: none; border-radius: 4px;
+            background: #3a6dbf; color: #fff;
+            cursor: pointer; font-size: 13px; font-weight: bold;
+        }
+        #kliny-results-close:hover { background: #2a5da0; }
+    `);
+
+    // ── Memo page: fetch attacked players for tribe picker ─────────────────────
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    function fetchAttackedPlayers(callback) {
+        GM_xmlhttpRequest({
+            method: 'GET',
+            url: `${API_BASE}/api/v1/attacked_players?world=${encodeURIComponent(world)}`,
+            headers: { 'Authorization': `Bearer ${API_KEY}` },
+            onload(resp) {
+                try {
+                    const json = JSON.parse(resp.responseText);
+                    callback(json.players || []);
+                } catch { callback([]); }
+            },
+            onerror() { callback([]); },
+        });
+    }
+
+    // ── Memo page: show results modal ─────────────────────────────────────────
+    // ── Memo page: auto-write notes into TW note tabs ────────────────────────
+    // TW notes UI (screen=memo):
+    //   1. Click "+" → new tab created and selected
+    //   2. Click "Editar" (locale-dependent) → textarea appears
+    //   3. Fill textarea
+    //   4. Click "Guardar" / "Zapisz" / "Save" etc.
+    async function writeSingleNote(content) {
+        // Step 1 – click "+" and wait for Memo.selectedTab to update
+        const addBtn = document.querySelector('#memo-add-tab-button a');
+        if (!addBtn) return 'Could not find the "+" button (#memo-add-tab-button a)';
+
+        const oldTabId = (typeof Memo !== 'undefined') ? Memo.selectedTab : null;
+        addBtn.click();
+
+        // Poll up to 2 s for the new tab to be registered
+        let elapsed = 0;
+        while (elapsed < 2000) {
+            await sleep(100);
+            elapsed += 100;
+            if (typeof Memo !== 'undefined' && Memo.selectedTab && Memo.selectedTab !== oldTabId) break;
+        }
+        const tabId = (typeof Memo !== 'undefined') ? Memo.selectedTab : null;
+        if (!tabId || tabId === oldTabId) return 'Timed out waiting for new tab to be created';
+
+        // Step 2 – click Edit link (CSS class a.edit_link — locale-agnostic)
+        const editLink = document.querySelector('#memo_' + tabId + ' a.edit_link');
+        if (!editLink) return 'Could not find a.edit_link for tab ' + tabId;
+        editLink.click();
+        await sleep(700);
+
+        // Step 3 – fill textarea (identified by TW's own id="message_TABID")
+        const ta = document.getElementById('message_' + tabId);
+        if (!ta) return 'Could not find #message_' + tabId + ' textarea';
+        ta.value = content;
+        ta.dispatchEvent(new Event('input',  { bubbles: true }));
+        ta.dispatchEvent(new Event('change', { bubbles: true }));
+
+        // Step 4 – click Save (TW's own id="submit_memo_TABID")
+        const saveBtn = document.getElementById('submit_memo_' + tabId);
+        if (!saveBtn) return 'Could not find #submit_memo_' + tabId;
+        saveBtn.click();
+        await sleep(500);
+
+        return null; // null = success
+    }
+
+    async function writeNotesToMemo(notes, statusEl) {
+        for (let i = 0; i < notes.length; i++) {
+            statusEl.style.color = '#aaa';
+            statusEl.textContent = `Writing note ${i + 1} of ${notes.length} to TW…`;
+            const err = await writeSingleNote(notes[i]);
+            if (err) {
+                statusEl.style.color = '#f66';
+                statusEl.textContent = `Note ${i + 1} failed: ${err}`;
+                return;
+            }
+            await sleep(300);
+        }
+        statusEl.style.color = '#2a7';
+        statusEl.textContent = `✓ ${notes.length} note(s) written to TW`;
+    }
+
+    function showSnipeResults(data) {
+        const existing = document.getElementById('kliny-results-modal');
+        if (existing) existing.remove();
+
+        const notesHtml = (data.notes || []).map((note, i) => `
+            <div>
+                <div style="color:#888;font-size:11px;margin-bottom:3px">Part ${i + 1} of ${data.notes.length}:</div>
+                <div class="kliny-note-block" id="kliny-note-${i}">${escapeHtml(note)}</div>
+                <button type="button" class="kliny-copy-btn" data-idx="${i}">📋 Copy</button>
+            </div>
+        `).join('');
+
+        const overlay = document.createElement('div');
+        overlay.id = 'kliny-results-modal';
+        overlay.innerHTML = `
+            <div id="kliny-results-box">
+                <h3>✓ ${escapeHtml(String(data.count))} snipes generated for ${escapeHtml(data.world)}</h3>
+                ${notesHtml || '<p style="color:#888">No notes output.</p>'}
+                <button type="button" id="kliny-results-close">Close</button>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        overlay.querySelectorAll('.kliny-copy-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = btn.dataset.idx;
+                const text = document.getElementById(`kliny-note-${idx}`).textContent;
+                navigator.clipboard.writeText(text).then(() => {
+                    btn.textContent = '✓ Copied!';
+                    btn.classList.add('copied');
+                    setTimeout(() => { btn.textContent = '\uD83D\uDCCB Copy'; btn.classList.remove('copied'); }, 2000);
+                });
+            });
+        });
+
+        document.getElementById('kliny-results-close').addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    }
+
+    // ── Memo page: generate snipes ────────────────────────────────────────────
+    function generateSnipes(params, statusEl, btn) {
+        if (!API_KEY) { showToast('Kliny: no API key set. Click ⚙ to configure.', 'error'); return; }
+        btn.disabled = true;
+        btn.textContent = '⏳ Generating…';
+        statusEl.textContent = 'Contacting server…';
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: `${API_BASE}/api/v1/generate_snipes`,
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${API_KEY}`,
+            },
+            data: JSON.stringify(params),
+            onload(resp) {
+                btn.disabled = false;
+                btn.textContent = '⚔ Generate Snipes';
+                statusEl.style.color = '#f66';
+                try {
+                    const json = JSON.parse(resp.responseText);
+                    if (json.success) {
+                        statusEl.style.color = '#888';
+                        statusEl.textContent = '';
+                        // Show modal immediately so notes are visible/copyable,
+                        // then auto-write each note into a new TW note tab
+                        showSnipeResults(json);
+                        if (json.notes && json.notes.length > 0) {
+                            writeNotesToMemo(json.notes, statusEl);
+                        }
+                    } else {
+                        statusEl.textContent = `Error: ${json.error || '(no message)'}`;
+                    }
+                } catch {
+                    // Non-JSON response (e.g. HTML 404 page) — show status + first 200 chars
+                    const preview = resp.responseText.replace(/<[^>]+>/g, '').trim().slice(0, 200);
+                    statusEl.textContent = `HTTP ${resp.status}${preview ? ': ' + preview : ''}`;
+                }
+            },
+            onerror() {
+                btn.disabled = false;
+                btn.textContent = '⚔ Generate Snipes';
+                statusEl.style.color = '#f66';
+                statusEl.textContent = `Could not reach ${API_BASE} — is the server running?`;
+            },
+        });
+    }
+
+    // ── Memo page: inject full snipe generator panel ──────────────────────────
+    function injectMemoPanel() {
+        const panel = document.createElement('div');
+        panel.id = 'kliny-snipe-panel';
+        panel.innerHTML = `
+            <h3>⚔ Kliny Snipe Generator</h3>
+
+            <div class="kliny-field">
+                <label>Snipe for</label>
+                <select id="kliny-mode">
+                    <option value="own">Myself</option>
+                    <option value="tribe">Tribe / players</option>
+                </select>
+            </div>
+
+            <div class="kliny-field" id="kliny-player-field">
+                <label>Players to snipe for <span id="kliny-players-loading" style="color:#888">(loading…)</span></label>
+                <div id="kliny-players-list"></div>
+            </div>
+
+            <div class="kliny-field">
+                <label>Blackout hours (comma-separated)</label>
+                <input id="kliny-blackout" type="text" value="${escapeHtml(GM_getValue('kliny_blackout', '23,0,1,2,3,4,5,6'))}" />
+            </div>
+
+            <div class="kliny-field">
+                <label>Min. interval between sends (seconds)</label>
+                <input id="kliny-delta" type="number" min="0" value="${GM_getValue('kliny_delta', 10)}" />
+            </div>
+
+            <div class="kliny-field">
+                <label>Replacement (zast)</label>
+                <select id="kliny-zast">
+                    <option value="yes"${GM_getValue('kliny_zast','yes')==='yes' ? ' selected':''}>Yes</option>
+                    <option value="no"${GM_getValue('kliny_zast','yes')==='no' ? ' selected':''}>No</option>
+                    <option value="its_complicated"${GM_getValue('kliny_zast','yes')==='its_complicated' ? ' selected':''}>It's complicated</option>
+                </select>
+            </div>
+
+            <div class="kliny-field">
+                <label>Target player ID override (0 = auto)</label>
+                <input id="kliny-player-id" type="number" min="0" value="${GM_getValue('kliny_player_id', 0)}" />
+            </div>
+
+            <div id="kliny-snipe-actions">
+                <button type="button" id="kliny-generate-btn">⚔ Generate Snipes</button>
+                <button type="button" id="kliny-panel-settings-btn">⚙</button>
+            </div>
+            <div id="kliny-status"></div>
+        `;
+        document.body.appendChild(panel);
+
+        const modeEl       = document.getElementById('kliny-mode');
+        const playerField  = document.getElementById('kliny-player-field');
+        const playersList  = document.getElementById('kliny-players-list');
+        const loadingSpan  = document.getElementById('kliny-players-loading');
+        const generateBtn  = document.getElementById('kliny-generate-btn');
+        const statusEl     = document.getElementById('kliny-status');
+
+        // Show/hide player picker when mode changes
+        modeEl.addEventListener('change', () => {
+            if (modeEl.value === 'tribe') {
+                playerField.style.display = 'block';
+                if (!playersList.children.length) {
+                    fetchAttackedPlayers(players => {
+                        loadingSpan.textContent = '';
+                        if (!players.length) {
+                            playersList.innerHTML = '<span style="color:#888;font-size:12px">No players found (empty DB?)</span>';
+                            return;
+                        }
+                        playersList.innerHTML = players.map(p =>
+                            `<label><input type="checkbox" value="${escapeHtml(p)}" checked> ${escapeHtml(p)}</label>`
+                        ).join('');
+                    });
+                }
+            } else {
+                playerField.style.display = 'none';
+            }
+        });
+
+        document.getElementById('kliny-panel-settings-btn').addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation(); openSettings();
+        });
+
+        generateBtn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            statusEl.style.color = '#888';
+
+            // Persist settings
+            GM_setValue('kliny_blackout',   document.getElementById('kliny-blackout').value.trim());
+            GM_setValue('kliny_delta',      Number(document.getElementById('kliny-delta').value));
+            GM_setValue('kliny_zast',       document.getElementById('kliny-zast').value);
+            GM_setValue('kliny_player_id',  Number(document.getElementById('kliny-player-id').value));
+
+            const mode       = modeEl.value;
+            const players    = mode === 'tribe'
+                ? Array.from(playersList.querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value)
+                : [];
+
+            generateSnipes({
+                world,
+                mode,
+                players,
+                black_out_hours: document.getElementById('kliny-blackout').value.trim(),
+                delta:           Number(document.getElementById('kliny-delta').value),
+                zast:            document.getElementById('kliny-zast').value,
+                player_id:       Number(document.getElementById('kliny-player-id').value),
+            }, statusEl, generateBtn);
+        });
+    }
+
+    // ── Inject UI button bar ──────────────────────────────────────────────────
+    function injectBar() {
+        if (isMemo) {
+            injectMemoPanel();
+            return;
+        }
+
+        if (isReqdef) {
+            const bar = document.createElement('div');
+            bar.id = 'kliny-bar';
+            bar.innerHTML = `
+                <button type="button" id="kliny-upload-btn">⬆ Upload attacks to Kliny</button>
+                <button type="button" id="kliny-settings-btn">⚙</button>
+                <span id="kliny-count"></span>
+            `;
+            document.body.appendChild(bar);
+
+            document.getElementById('kliny-upload-btn').addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const text = getReqdefText();
+                if (!text) return;
+                showReqdefConfirmModal(text, () => uploadRawText(text));
+            });
+
+            document.getElementById('kliny-settings-btn').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openSettings(); });
+        }
+
+        if (isCombined) {
+            const bar = document.createElement('div');
+            bar.id = 'kliny-bar';
+            bar.innerHTML = `
+                <button type="button" id="kliny-army-btn">⬆ Upload army to Kliny</button>
+                <button type="button" id="kliny-settings-btn">⚙</button>
+                <span id="kliny-count"></span>
+            `;
+            document.body.appendChild(bar);
+
+            document.getElementById('kliny-army-btn').addEventListener('click', (e) => {
+                e.preventDefault(); e.stopPropagation();
+                const armyHtml = getArmyRawHTML();
+                if (!armyHtml) return;
+                showArmyConfirmModal(armyHtml, () => uploadRawArmy(armyHtml));
+            });
+
+            document.getElementById('kliny-settings-btn').addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openSettings(); });
+        }
+    }
+
+    // Wait for the page to fully render before injecting
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', injectBar);
+    } else {
+        injectBar();
+    }
+
+})();
