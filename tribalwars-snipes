@@ -55,6 +55,18 @@
     // ── Extract world from hostname (e.g. es100.tribalwars.es → "es100") ─────
     const world = location.hostname.split('.')[0];
 
+    // ── Shared API error formatter ────────────────────────────────────────────
+    // Returns a human-readable error string from a GM_xmlhttpRequest response.
+    function apiError(resp) {
+        if (resp.status === 401) return 'Invalid or missing API key — check ⚙ Settings';
+        try {
+            const json = JSON.parse(resp.responseText);
+            if (json.error) return `[${resp.status}] ${json.error}`;
+        } catch { /* not JSON */ }
+        const preview = resp.responseText.replace(/<[^>]+>/g, '').trim().slice(0, 200);
+        return `HTTP ${resp.status}${preview ? ': ' + preview : ''}`;
+    }
+
     // ── Upload raw attacks text to API ────────────────────────────────────────
     function uploadRawText(text) {
         if (!API_KEY) {
@@ -81,10 +93,10 @@
                     if (json.success) {
                         showToast(`✓ Uploaded ${json.inserted} attacks to world ${json.world}`, 'success');
                     } else {
-                        showToast(`✗ Error: ${json.error}`, 'error');
+                        showToast(`✗ ${apiError(resp)}`, 'error');
                     }
                 } catch {
-                    showToast(`✗ Unexpected response (${resp.status})`, 'error');
+                    showToast(`✗ ${apiError(resp)}`, 'error');
                 }
             },
             onerror() {
@@ -211,10 +223,10 @@
                     if (json.success) {
                         showToast(`✓ Army uploaded for ${json.world} (${json.villages} villages)`, 'success');
                     } else {
-                        showToast(`✗ Error: ${json.error}`, 'error');
+                        showToast(`✗ ${apiError(resp)}`, 'error');
                     }
                 } catch {
-                    showToast(`✗ Unexpected response (${resp.status})`, 'error');
+                    showToast(`✗ ${apiError(resp)}`, 'error');
                 }
             },
             onerror() {
@@ -573,9 +585,27 @@
         statusEl.textContent = `✓ ${notes.length} note(s) written to TW`;
     }
 
+    function snipesToCsv(snipes) {
+        if (!snipes || !snipes.length) return '';
+        const headers = Object.keys(snipes[0]);
+        const rows = snipes.map(r => headers.map(h => {
+            const v = r[h] == null ? '' : String(r[h]);
+            return v.includes(';') || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v;
+        }).join(';'));
+        return [headers.join(';'), ...rows].join('\r\n');
+    }
+
     function showSnipeResults(data) {
         const existing = document.getElementById('kliny-results-modal');
         if (existing) existing.remove();
+
+        const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+        const suffix = data.own_snipes === false ? 'snipes_colleague' : 'snipes';
+        const csvFilename = `${ts}_${data.world}_${suffix}.csv`;
+        const csvContent = snipesToCsv(data.snipes || []);
+        const csvHref = csvContent
+            ? URL.createObjectURL(new Blob([csvContent], { type: 'text/csv' }))
+            : null;
 
         const notesHtml = (data.notes || []).map((note, i) => `
             <div>
@@ -590,6 +620,7 @@
         overlay.innerHTML = `
             <div id="kliny-results-box">
                 <h3>✓ ${escapeHtml(String(data.count))} snipes generated for ${escapeHtml(data.world)}</h3>
+                ${csvHref ? `<div style="margin-bottom:10px"><a id="kliny-csv-dl" href="${csvHref}" download="${escapeHtml(csvFilename)}" style="color:#ffe478;font-weight:bold">💾 Download CSV (${escapeHtml(csvFilename)})</a></div>` : ''}
                 ${notesHtml || '<p style="color:#888">No notes output.</p>'}
                 <button type="button" id="kliny-results-close">Close</button>
             </div>
@@ -608,8 +639,11 @@
             });
         });
 
-        document.getElementById('kliny-results-close').addEventListener('click', () => overlay.remove());
-        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+        document.getElementById('kliny-results-close').addEventListener('click', () => {
+            if (csvHref) URL.revokeObjectURL(csvHref);
+            overlay.remove();
+        });
+        overlay.addEventListener('click', e => { if (e.target === overlay) { if (csvHref) URL.revokeObjectURL(csvHref); overlay.remove(); } });
     }
 
     // ── Memo page: generate snipes ────────────────────────────────────────────
@@ -643,12 +677,14 @@
                             writeNotesToMemo(json.notes, statusEl);
                         }
                     } else {
-                        statusEl.textContent = `Error: ${json.error || '(no message)'}`;
+                        const msg = apiError(resp);
+                        statusEl.textContent = msg;
+                        showToast(`✗ ${msg}`, 'error');
                     }
                 } catch {
-                    // Non-JSON response (e.g. HTML 404 page) — show status + first 200 chars
-                    const preview = resp.responseText.replace(/<[^>]+>/g, '').trim().slice(0, 200);
-                    statusEl.textContent = `HTTP ${resp.status}${preview ? ': ' + preview : ''}`;
+                    const msg = apiError(resp);
+                    statusEl.textContent = msg;
+                    showToast(`✗ ${msg}`, 'error');
                 }
             },
             onerror() {
