@@ -432,7 +432,12 @@ window.FarmGod.Main = (function (Library, Translation) {
   };
 
   // FIX: human-like randomized delay — more natural than a fixed 250ms interval
-  const humanDelay = () => 360 + Math.floor(Math.random() * 150); // 200–400ms
+  // If the origin village name contains "pollo" (case-insensitive), add 1 extra second.
+  const humanDelay = (villageName = '') => {
+    const base = 360 + Math.floor(Math.random() * 150); // 360–510ms
+    const bonus = /pollo/i.test(villageName) ? 1000 : 0;
+    return base + bonus;
+  };
 
   // FIX: processAutoSendQueue no longer self-schedules after sendFarm.
   // Instead it passes an onDone callback into sendFarm, so the next send only
@@ -450,7 +455,11 @@ window.FarmGod.Main = (function (Library, Translation) {
 
     if (game_data.market != 'nl' || $farm.data('origin') == curVillage) {
       // Advance only after AJAX completes + human delay
-      sendFarm($farm, () => setTimeout(processAutoSendQueue, humanDelay()));
+      // Pass the origin village name so humanDelay can apply the pollo bonus
+      sendFarm($farm, () => {
+        const name = $farm.data('origin-name') || '';
+        setTimeout(processAutoSendQueue, humanDelay(name));
+      });
     } else {
       // Skip this farm (no send needed), short pause then continue
       setTimeout(processAutoSendQueue, 50);
@@ -542,7 +551,7 @@ window.FarmGod.Main = (function (Library, Translation) {
                     <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${val.origin.id}">${val.origin.name} (${val.origin.coord})</a></td>
                     <td style="text-align:center;"><a href="${game_data.link_base_pure}info_village&id=${val.target.id}">${val.target.coord}</a></td>
                     <td style="text-align:center;">${val.fields.toFixed(2)}</td>
-                    <td style="text-align:center;"><a href="#" data-origin="${val.origin.id}" data-target="${val.target.id}" data-template="${val.template.id}" class="farmGod_icon farm_icon farm_icon_${val.template.name}" style="margin:auto;"></a></td>
+                    <td style="text-align:center;"><a href="#" data-origin="${val.origin.id}" data-origin-name="${val.origin.name}" data-target="${val.target.id}" data-template="${val.template.id}" class="farmGod_icon farm_icon farm_icon_${val.template.name}" style="margin:auto;"></a></td>
                   </tr>`;
         });
       });
