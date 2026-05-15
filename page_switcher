@@ -1,0 +1,159 @@
+// ==UserScript==
+// @name         Page Timer
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Track how long to stay on each TW screen. Configure the schedule below.
+// @author       You
+// @match        https://*.plemiona.pl/*
+// @match        https://*.tribalwars.net/*
+// @match        https://*.die-staemme.de/*
+// @match        https://*.staemme.ch/*
+// @match        https://*.tribalwars.nl/*
+// @match        https://*.tribalwars.co.uk/*
+// @match        https://*.tribalwars.us/*
+// @match        https://*.tribalwars.com.pt/*
+// @match        https://*.tribalwars.com.br/*
+// @match        https://*.divokekmeny.cz/*
+// @match        https://*.tribals.it/*
+// @match        https://*.guerretribale.fr/*
+// @match        https://*.guerrastribales.es/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addStyle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ── SCHEDULE ──────────────────────────────────────────────────────────────
+    // Map screen name (the "screen" URL param) → minutes to stay on that page.
+    // Only screens listed here will show a timer widget.
+    const SCHEDULE = {
+        reqdef:            5,
+        overview_villages: 4,
+        memo:              2,
+    };
+    // ─────────────────────────────────────────────────────────────────────────
+
+    const STORAGE_KEY = 'page_timer_arrivals';
+
+    // Determine the current screen key.
+    // For overview_villages we also factor in the mode param to differentiate.
+    const params = new URLSearchParams(location.search);
+    const screen = params.get('screen') || '';
+    const mode   = params.get('mode')   || '';
+    const pageKey = (screen === 'overview_villages' && mode)
+        ? `${screen}__${mode}`
+        : screen;
+
+    // Resolve schedule key: try compound key first, then plain screen
+    const scheduleKey = (pageKey in SCHEDULE) ? pageKey
+        : (screen in SCHEDULE) ? screen
+        : null;
+
+    if (!scheduleKey) return;   // this screen isn't tracked
+
+    const durationMs = SCHEDULE[scheduleKey] * 60 * 1000;
+    const pages      = Object.keys(SCHEDULE);
+
+    // ── Storage (GM) ──────────────────────────────────────────────────────────
+    function loadArrivals() {
+        try { return JSON.parse(GM_getValue(STORAGE_KEY, '{}')); }
+        catch { return {}; }
+    }
+
+    function saveArrivals(arrivals) {
+        GM_setValue(STORAGE_KEY, JSON.stringify(arrivals));
+    }
+
+    // Record arrival for this page
+    const arrivals = loadArrivals();
+    arrivals[scheduleKey] = Date.now();
+    saveArrivals(arrivals);
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function formatMs(ms) {
+        if (ms <= 0) return '0s';
+        const totalSec = Math.floor(ms / 1000);
+        const h = Math.floor(totalSec / 3600);
+        const m = Math.floor((totalSec % 3600) / 60);
+        const s = totalSec % 60;
+        const parts = [];
+        if (h) parts.push(`${h}h`);
+        if (m || h) parts.push(`${m}m`);
+        parts.push(`${s}s`);
+        return parts.join(' ');
+    }
+
+    function nextPage(key) {
+        const idx = pages.indexOf(key);
+        if (idx === -1) return null;
+        return pages[(idx + 1) % pages.length];
+    }
+
+    function getRemainingMs() {
+        const arr = loadArrivals();
+        const arrivedAt = arr[scheduleKey] || Date.now();
+        return Math.max(0, durationMs - (Date.now() - arrivedAt));
+    }
+
+    // ── Widget ────────────────────────────────────────────────────────────────
+    GM_addStyle(`
+        #pt-widget {
+            position: fixed; bottom: 20px; left: 12px; z-index: 999999;
+            background: rgba(18,18,18,0.92);
+            border: 1px solid #444; border-radius: 7px;
+            padding: 8px 13px; font-size: 12px; color: #ccc;
+            box-shadow: 0 3px 12px rgba(0,0,0,0.5);
+            min-width: 150px; cursor: default;
+            user-select: none;
+        }
+        #pt-widget.overdue { border-color: #c44; }
+        #pt-label   { font-size: 10px; color: #777; margin-bottom: 2px; }
+        #pt-time    { font-size: 18px; font-weight: bold; color: #fff; letter-spacing: 0.5px; }
+        #pt-time.overdue { color: #f66; }
+        #pt-next    { font-size: 10px; color: #888; margin-top: 3px; }
+        #pt-bar-wrap { margin-top: 6px; background: #333; border-radius: 3px; height: 4px; }
+        #pt-bar     { height: 4px; border-radius: 3px; background: #2a8a4a;
+                      transition: width 1s linear, background 0.5s; }
+        #pt-bar.overdue { background: #c44; }
+    `);
+
+    const widget = document.createElement('div');
+    widget.id = 'pt-widget';
+    widget.innerHTML = `
+        <div id="pt-label">⏱ ${scheduleKey} — ${SCHEDULE[scheduleKey]}m</div>
+        <div id="pt-time">–</div>
+        <div id="pt-bar-wrap"><div id="pt-bar" style="width:100%"></div></div>
+        <div id="pt-next"></div>
+    `;
+    document.body.appendChild(widget);
+
+    const timeEl  = document.getElementById('pt-time');
+    const barEl   = document.getElementById('pt-bar');
+    const nextEl  = document.getElementById('pt-next');
+    const next    = nextPage(scheduleKey);
+
+    function tick() {
+        const remaining = getRemainingMs();
+        const overdue   = remaining === 0;
+        const pct       = Math.min(100, (remaining / durationMs) * 100);
+
+        timeEl.textContent = overdue ? 'OVERDUE' : formatMs(remaining);
+        timeEl.className   = overdue ? 'overdue' : '';
+        widget.className   = overdue ? 'overdue' : '';
+        barEl.style.width  = pct + '%';
+        barEl.className    = overdue ? 'overdue' : '';
+
+        if (next) {
+            nextEl.textContent = overdue
+                ? `→ go to: ${next}`
+                : `next: ${next}`;
+            nextEl.style.color = overdue ? '#f99' : '#888';
+        }
+    }
+
+    tick();
+    setInterval(tick, 1000);
+
+})();
