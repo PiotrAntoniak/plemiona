@@ -1,0 +1,427 @@
+// ==UserScript==
+// @name         TW Resource Production Calculator
+// @namespace    http://tampermonkey.net/
+// @version      1.5
+// @description  Calculates hourly resource production from building levels in the village overview, respecting world speed, village bonuses (30% all resources, 100% wood/clay/iron)
+// @author       TW Helper
+// @match        https://*.guerrastribales.es/game.php*
+// @match        https://*.tribalwars.net/game.php*
+// @match        https://*.tribalwars.com.br/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ── Production table (speed x1) for levels 0–30 ──────────────────────────
+    // Exact values from the official Polish TW wiki table (Tartak/Huta/Cegielnia).
+    // All three resource buildings share identical production per level.
+    const PROD_TABLE = [
+        5,    // level 0  (base world production even without building)
+        30,   // 1
+        35,   // 2
+        41,   // 3
+        47,   // 4
+        55,   // 5
+        64,   // 6
+        74,   // 7
+        86,   // 8
+        100,  // 9
+        117,  // 10
+        136,  // 11
+        158,  // 12
+        184,  // 13
+        214,  // 14
+        249,  // 15
+        289,  // 16
+        337,  // 17
+        391,  // 18
+        455,  // 19
+        530,  // 20
+        616,  // 21
+        717,  // 22
+        833,  // 23
+        969,  // 24
+        1127, // 25
+        1311, // 26
+        1525, // 27
+        1774, // 28
+        2063, // 29
+        2400, // 30
+    ];
+
+    function baseProd(level) {
+        const lv = parseInt(level, 10);
+        if (isNaN(lv) || lv < 0) return PROD_TABLE[0];
+        if (lv >= PROD_TABLE.length) return PROD_TABLE[PROD_TABLE.length - 1];
+        return PROD_TABLE[lv];
+    }
+
+    // ── Village bonus icons ───────────────────────────────────────────────────
+    // Reads bonus_icon elements inside a village name cell and returns multipliers.
+    // Supports:
+    //   bonus_icon_8 → "30% más de producción en todos los recursos"  (all ×1.3)
+    //   bonus_icon_1 → "100% más de producción de madera"              (wood ×2)
+    //   bonus_icon_2 → "100% más de producción de barro/arcilla"       (clay ×2)
+    //   bonus_icon_3 → "100% más de producción de hierro"              (iron ×2)
+    function parseBonusIcons(cell) {
+        const bonus = { wood: 1.0, clay: 1.0, iron: 1.0 };
+        if (!cell) return bonus;
+        const icons = cell.querySelectorAll('.bonus_icon');
+        icons.forEach(icon => {
+            const title = (icon.getAttribute('data-title') || '').toLowerCase();
+            if (title.includes('30%') && (title.includes('todos') || title.includes('all'))) {
+                bonus.wood *= 1.3; bonus.clay *= 1.3; bonus.iron *= 1.3;
+            } else if (title.includes('100%') && (title.includes('madera') || title.includes('wood') || title.includes('timber'))) {
+                bonus.wood *= 2.0;
+            } else if (title.includes('100%') && (title.includes('barro') || title.includes('clay') || title.includes('arcilla'))) {
+                bonus.clay *= 2.0;
+            } else if (title.includes('100%') && (title.includes('hierro') || title.includes('iron'))) {
+                bonus.iron *= 2.0;
+            }
+        });
+        return bonus;
+    }
+
+    // ── Reading a building level from a row ───────────────────────────────────
+    function getLevel(row, className) {
+        const td = row.querySelector('td.' + className);
+        if (!td) return 0;
+        // When a building doesn't exist TW renders <span class="hidden">0</span>
+        const hidden = td.querySelector('.hidden');
+        if (hidden) return 0;
+        return parseInt(td.textContent.trim(), 10) || 0;
+    }
+
+    // ── Number formatting (Spanish/German style: 1.234) ───────────────────────
+    function fmt(n) {
+        return Math.round(n).toLocaleString('de-DE');
+    }
+
+    // ── Styles ────────────────────────────────────────────────────────────────
+    const CSS = `
+    #tw-prod-panel {
+        position: fixed;
+        top: 60px;
+        right: 10px;
+        width: 330px;
+        background: #f0e6c8;
+        border: 2px solid #7a5c28;
+        border-radius: 4px;
+        box-shadow: 3px 4px 12px rgba(0,0,0,0.5);
+        font-family: 'Verdana', sans-serif;
+        font-size: 11px;
+        color: #2b1a00;
+        z-index: 99999;
+        user-select: none;
+    }
+    #tw-prod-title {
+        margin: 0;
+        padding: 6px 10px;
+        background: #7a5c28;
+        color: #f5e6b0;
+        font-size: 12px;
+        font-weight: bold;
+        cursor: move;
+        border-radius: 2px 2px 0 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    #tw-prod-title button {
+        background: none; border: none; color: #f5e6b0;
+        font-size: 15px; cursor: pointer; padding: 0; line-height: 1;
+    }
+    #tw-prod-settings {
+        padding: 5px 10px;
+        background: #e8d8a8;
+        border-bottom: 1px solid #c8aa68;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+    }
+    #tw-prod-settings label { white-space: nowrap; }
+    #tw-speed-input {
+        width: 52px; padding: 2px 4px;
+        border: 1px solid #7a5c28; border-radius: 2px;
+        background: #fffae8;
+        font-size: 11px;
+    }
+    #tw-speed-apply {
+        padding: 2px 8px; cursor: pointer;
+        background: #a07830; color: #fff;
+        border: 1px solid #7a5c28; border-radius: 2px;
+        font-size: 11px;
+    }
+    #tw-speed-apply:hover { background: #7a5c28; }
+    #tw-prod-panel-body {
+        overflow-y: auto;
+        max-height: 500px;
+    }
+    #tw-prod-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    #tw-prod-table th {
+        background: #c8aa68;
+        padding: 4px 5px;
+        text-align: center;
+        border: 1px solid #a08040;
+        font-size: 10px;
+        line-height: 1.3;
+    }
+    #tw-prod-table td {
+        padding: 3px 5px;
+        border: 1px solid #d4b870;
+        text-align: right;
+        line-height: 1.4;
+    }
+    #tw-prod-table td:first-child {
+        text-align: left;
+        max-width: 115px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    #tw-prod-table tr:nth-child(even) td { background: #f7edcc; }
+    #tw-prod-table tr:nth-child(odd)  td { background: #fdf6e0; }
+    #tw-prod-table .tot-row td {
+        background: #c8aa68 !important;
+        font-weight: bold;
+    }
+    .tw-wood { color: #3a6e00; }
+    .tw-clay { color: #8b5800; }
+    .tw-iron { color: #444; }
+    .tw-lv   { font-size: 9px; color: #888; }
+    .tw-bonus-tag { font-size: 9px; }
+    #tw-prod-refresh {
+        display: block;
+        width: 100%;
+        text-align: center;
+        padding: 4px;
+        background: #a07830;
+        color: #fff;
+        cursor: pointer;
+        font-size: 10px;
+        border: none;
+        border-radius: 0 0 2px 2px;
+    }
+    #tw-prod-refresh:hover { background: #7a5c28; }
+    `;
+
+    // ── Core calculation ──────────────────────────────────────────────────────
+    function calcProduction(speed) {
+        const table = document.getElementById('buildings_table');
+        if (!table) return null;
+
+        const rows = table.querySelectorAll('tbody tr.vrow');
+        if (!rows.length) return null;
+
+        const villages = [];
+        let totWood = 0, totClay = 0, totIron = 0;
+
+        rows.forEach(row => {
+            // Village name (strip "0001. " prefix and coords)
+            const nameSpan = row.querySelector('.quickedit-label');
+            let name = '?';
+            if (nameSpan) {
+                name = (nameSpan.getAttribute('data-text') || nameSpan.textContent).trim();
+                name = name.replace(/^\d+\.\s*/, '').split('(')[0].trim();
+            }
+
+            // Levels
+            // Clay pit class in TW source is "b_stone" (Barrera/Cegielnia/Clay pit)
+            const woodLv = getLevel(row, 'b_wood');
+            const clayLv = getLevel(row, 'b_stone');
+            const ironLv = getLevel(row, 'b_iron');
+
+            // Bonus icons in the name cell
+            const nameCell = row.querySelector('td.nowrap');
+            const bonus = parseBonusIcons(nameCell);
+
+            // Final production = base(lv) × worldSpeed × villageBonus
+            const wood = Math.round(baseProd(woodLv) * speed * bonus.wood);
+            const clay = Math.round(baseProd(clayLv) * speed * bonus.clay);
+            const iron = Math.round(baseProd(ironLv) * speed * bonus.iron);
+
+            totWood += wood; totClay += clay; totIron += iron;
+            villages.push({ name, woodLv, clayLv, ironLv, wood, clay, iron, bonus });
+        });
+
+        return { villages, totWood, totClay, totIron };
+    }
+
+    // ── Render panel ──────────────────────────────────────────────────────────
+    function renderTable(data) {
+        const rows = data.villages.map(v => {
+            // Build bonus label
+            let bonusHTML = '';
+            const bw = Math.round((v.bonus.wood - 1) * 100);
+            const bc = Math.round((v.bonus.clay - 1) * 100);
+            const bi = Math.round((v.bonus.iron - 1) * 100);
+            if (bw === bc && bc === bi && bw > 0) {
+                bonusHTML = ` <span class="tw-bonus-tag" style="color:#b05000;" title="Bonus todos recursos +${bw}%">★${bw}%</span>`;
+            } else {
+                if (bw > 0) bonusHTML += ` <span class="tw-bonus-tag tw-wood" title="Bonus madera +${bw}%">+${bw}%🪵</span>`;
+                if (bc > 0) bonusHTML += ` <span class="tw-bonus-tag tw-clay" title="Bonus barro +${bc}%">+${bc}%🧱</span>`;
+                if (bi > 0) bonusHTML += ` <span class="tw-bonus-tag tw-iron" title="Bonus hierro +${bi}%">+${bi}%⚙</span>`;
+            }
+
+            return `<tr>
+                <td title="${v.name}">${v.name}${bonusHTML}</td>
+                <td class="tw-wood">${fmt(v.wood)}<br><span class="tw-lv">Lv ${v.woodLv}</span></td>
+                <td class="tw-clay">${fmt(v.clay)}<br><span class="tw-lv">Lv ${v.clayLv}</span></td>
+                <td class="tw-iron">${fmt(v.iron)}<br><span class="tw-lv">Lv ${v.ironLv}</span></td>
+                <td>${fmt(v.wood + v.clay + v.iron)}</td>
+            </tr>`;
+        }).join('');
+
+        const tot = data.totWood + data.totClay + data.totIron;
+        return `
+        <table id="tw-prod-table">
+            <thead>
+                <tr>
+                    <th>Pueblo</th>
+                    <th class="tw-wood">🪵 Madera</th>
+                    <th class="tw-clay">🧱 Barro</th>
+                    <th class="tw-iron">⚙ Hierro</th>
+                    <th>Total</th>
+                </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+            <tfoot>
+                <tr class="tot-row">
+                    <td>TOTAL /h</td>
+                    <td class="tw-wood">${fmt(data.totWood)}</td>
+                    <td class="tw-clay">${fmt(data.totClay)}</td>
+                    <td class="tw-iron">${fmt(data.totIron)}</td>
+                    <td>${fmt(tot)}</td>
+                </tr>
+            </tfoot>
+        </table>`;
+    }
+
+    function buildPanel(speed) {
+        const data = calcProduction(speed);
+        if (!data) return null;
+
+        const panel = document.createElement('div');
+        panel.id = 'tw-prod-panel';
+        panel.innerHTML = `
+        <div id="tw-prod-title">
+            ⚒ Producción / hora
+            <button id="tw-prod-close" title="Cerrar">✕</button>
+        </div>
+        <div id="tw-prod-settings">
+            <label for="tw-speed-input">Velocidad:</label>
+            <input type="number" id="tw-speed-input" min="0.5" max="10" step="0.5" value="${speed}">
+            <button id="tw-speed-apply">Aplicar ✓</button>
+        </div>
+        <div id="tw-prod-panel-body">${renderTable(data)}</div>
+        <button id="tw-prod-refresh">↺ Actualizar datos</button>
+        `;
+        return panel;
+    }
+
+    // ── Draggable header ──────────────────────────────────────────────────────
+    function makeDraggable(panel) {
+        const header = panel.querySelector('#tw-prod-title');
+        let dragging = false, ox = 0, oy = 0;
+        header.addEventListener('mousedown', e => {
+            if (e.target.tagName === 'BUTTON') return;
+            dragging = true;
+            ox = e.clientX - panel.offsetLeft;
+            oy = e.clientY - panel.offsetTop;
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', e => {
+            if (!dragging) return;
+            panel.style.left  = (e.clientX - ox) + 'px';
+            panel.style.top   = (e.clientY - oy) + 'px';
+            panel.style.right = 'auto';
+        });
+        document.addEventListener('mouseup', () => { dragging = false; });
+    }
+
+    // ── Event wiring ──────────────────────────────────────────────────────────
+    function wireEvents(panel, getSpeed, setSpeed, rebuild) {
+        panel.querySelector('#tw-prod-close').addEventListener('click', () => panel.remove());
+
+        const apply = () => {
+            const val = parseFloat(document.getElementById('tw-speed-input').value);
+            if (!isNaN(val) && val > 0) { setSpeed(val); rebuild(val); }
+        };
+        panel.querySelector('#tw-speed-apply').addEventListener('click', apply);
+        panel.querySelector('#tw-speed-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter') apply();
+        });
+        panel.querySelector('#tw-prod-refresh').addEventListener('click', () => rebuild(getSpeed()));
+    }
+
+    // ── Entry point ───────────────────────────────────────────────────────────
+    function init() {
+        // Only fire on the buildings overview screen.
+        // The URL may be just ?screen=overview_villages (mode=buildings is the default
+        // tab and may not appear as a query param on first load).
+        const params = new URLSearchParams(window.location.search);
+        const screen = params.get('screen');
+        const mode   = params.get('mode');
+        const isRightScreen = screen === 'overview_villages';
+        const isRightMode   = !mode || mode === 'buildings'; // absent = default = buildings
+        if (!isRightScreen || !isRightMode) return;
+
+        // Inject CSS once
+        if (!document.getElementById('tw-prod-css')) {
+            const style = document.createElement('style');
+            style.id = 'tw-prod-css';
+            style.textContent = CSS;
+            document.head.appendChild(style);
+        }
+
+        let speed = parseFloat(localStorage.getItem('tw_prod_speed') || '1');
+
+        function rebuild(s) {
+            const old = document.getElementById('tw-prod-panel');
+            const savedLeft = old ? old.style.left : null;
+            const savedTop  = old ? old.style.top  : null;
+            if (old) old.remove();
+
+            const panel = buildPanel(s);
+            if (!panel) {
+                console.warn('[TW Prod] Could not find village building table.');
+                return;
+            }
+            if (savedLeft) { panel.style.left = savedLeft; panel.style.right = 'auto'; }
+            if (savedTop)  panel.style.top = savedTop;
+
+            document.body.appendChild(panel);
+            makeDraggable(panel);
+            wireEvents(panel, () => speed, v => {
+                speed = v;
+                localStorage.setItem('tw_prod_speed', v);
+            }, rebuild);
+        }
+
+        // Poll until the buildings_table is rendered (TW builds it via JS after load)
+        let attempts = 0;
+        const MAX_ATTEMPTS = 20; // 10 seconds total
+        function tryInit() {
+            if (document.getElementById('buildings_table')) {
+                rebuild(speed);
+            } else if (attempts++ < MAX_ATTEMPTS) {
+                setTimeout(tryInit, 500);
+            } else {
+                console.warn('[TW Prod] buildings_table never appeared — are you on the Buildings tab?');
+            }
+        }
+        tryInit();
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+})();
