@@ -1,0 +1,411 @@
+// ==UserScript==
+// @name         Kliny Auto-Sniper (Automatic)
+// @namespace    http://tampermonkey.net/
+// @version      2.0
+// @description  Fully automatic sniper — monitors the Kliny memo table and fires snipes without any click required
+// @author       You
+// @match        https://*.plemiona.pl/game.php*
+// @match        https://*.tribalwars.net/game.php*
+// @match        https://*.die-staemme.de/game.php*
+// @match        https://*.staemme.ch/game.php*
+// @match        https://*.tribalwars.nl/game.php*
+// @match        https://*.tribalwars.co.uk/game.php*
+// @match        https://*.tribalwars.us/game.php*
+// @match        https://*.tribalwars.com.pt/game.php*
+// @match        https://*.tribalwars.com.br/game.php*
+// @match        https://*.divokekmeny.cz/game.php*
+// @match        https://*.tribals.it/game.php*
+// @match        https://*.guerretribale.fr/game.php*
+// @match        https://*.guerrastribales.es/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const SNIPE_KEY = 'kliny_snipe_target';   // localStorage: snipe timing data
+    const CLOSE_KEY = 'kliny_close_tab';      // sessionStorage: "close this tab"
+    const TTL_MS    = 120_000;                // stored data expires after 2 minutes
+
+    // How many ms before targetSend to open the klin link.
+    // Must be long enough for two page loads (place → confirm) before the worker fires.
+    // Increase if pages load slowly on your connection.
+    const LEAD_MS   = 5_000;
+
+    const params   = new URLSearchParams(location.search);
+    const screen   = params.get('screen');
+    const tryParam = params.get('try');
+
+    // ── After a snipe fires, the page navigates to a result page.
+    //    We store CLOSE_KEY in sessionStorage so the result page can close the tab.
+    if (sessionStorage.getItem(CLOSE_KEY)) {
+        sessionStorage.removeItem(CLOSE_KEY);
+        window.close();
+        // window.close() may be blocked for non-script-opened tabs; show a button as fallback.
+        const btn = document.createElement('button');
+        btn.textContent = '✕ Close snipe tab';
+        Object.assign(btn.style, {
+            position: 'fixed', top: '8px', right: '8px', zIndex: '99999',
+            padding: '7px 16px', background: '#c44', color: '#fff',
+            border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '13px',
+        });
+        btn.onclick = () => window.close();
+        document.body ? document.body.appendChild(btn)
+            : document.addEventListener('DOMContentLoaded', () => document.body.appendChild(btn));
+        return;
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Get current server epoch ms (TW keeps Timing in sync with the server clock).
+    function getServerTime() {
+        return (typeof Timing !== 'undefined' && Timing.getCurrentServerTime)
+            ? Timing.getCurrentServerTime()
+            : Date.now();
+    }
+
+    // Parse a server-local datetime string ("2026-05-14 06:41:59.818") → epoch ms.
+    // Use game_data.server_utc_diff (seconds) when available; otherwise derive the
+    // UTC offset from the hostname using an IANA timezone map (handles DST correctly).
+    const DOMAIN_TZ = {
+        'plemiona.pl':        'Europe/Warsaw',
+        'tribalwars.net':     'Europe/Berlin',
+        'die-staemme.de':     'Europe/Berlin',
+        'staemme.ch':         'Europe/Zurich',
+        'tribalwars.nl':      'Europe/Amsterdam',
+        'tribalwars.co.uk':   'Europe/London',
+        'tribalwars.us':      'America/New_York',
+        'tribalwars.com.pt':  'Europe/Lisbon',
+        'tribalwars.com.br':  'America/Sao_Paulo',
+        'divokekmeny.cz':     'Europe/Prague',
+        'tribals.it':         'Europe/Rome',
+        'guerretribale.fr':   'Europe/Paris',
+        'guerrastribales.es': 'Europe/Madrid',
+    };
+
+    function getServerUtcOffsetMs() {
+        // Prefer the value TW exposes at runtime (already DST-aware, in seconds).
+        if (window.game_data && typeof window.game_data.server_utc_diff === 'number') {
+            return window.game_data.server_utc_diff * 1000;
+        }
+        // Fallback: derive from hostname via Intl API (DST-aware).
+        const host = location.hostname;
+        const tld  = Object.keys(DOMAIN_TZ).find(d => host.endsWith('.' + d) || host === d);
+        if (!tld) return 0;
+        const tz = DOMAIN_TZ[tld];
+        const now = Date.now();
+        const utcStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC', hour12: false,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);
+        const tzStr  = new Intl.DateTimeFormat('en-CA', { timeZone: tz,    hour12: false,
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(now);
+        return new Date(tzStr.replace(', ', 'T')).getTime() - new Date(utcStr.replace(', ', 'T')).getTime();
+    }
+
+    function parseServerDate(s) {
+        const utcEpoch = new Date(s.trim().replace(' ', 'T') + 'Z').getTime();
+        return utcEpoch - getServerUtcOffsetMs();
+    }
+
+    function toServerTimeStr(epochMs) {
+        return new Date(epochMs + getServerUtcOffsetMs())
+            .toISOString().replace('T', ' ').slice(0, 23);
+    }
+
+    // ── 1. MEMO PAGE — automatic firing ───────────────────────────────────────
+    //    Scans the table ONCE on load (and again when Re-scan is clicked).
+    //    The 100 ms tick loop only reads the stored list — no repeated DOM parsing.
+    if (screen === 'memo') {
+
+        // Track which snipes have already been launched (by targetSend epoch).
+        const launched = new Set();
+
+        // Cached snipe list — populated by scanTable(), overwritten on re-scan.
+        let cachedSnipes = [];
+
+        function parseMemoRows() {
+            const rows = document.querySelectorAll('table.vis.bbcodetable tr');
+            const snipes = [];
+            rows.forEach(row => {
+                const link = row.querySelector('a[href*="screen=place"]');
+                if (!link) return;
+                const cells = row.querySelectorAll('td');
+                if (cells.length < 6) return;
+                try {
+                    const min_ms = parseServerDate(cells[2].textContent);
+                    const max_ms = parseServerDate(cells[3].textContent);
+                    const arr_ms = parseServerDate(cells[5].textContent);
+                    const gap_ms = max_ms - min_ms;
+                    const targetSend = gap_ms > 1000
+                        ? max_ms - 500
+                        : min_ms + Math.round(gap_ms / 2);
+                    snipes.push({ link, min_ms, max_ms, arr_ms, targetSend });
+                } catch (err) {
+                    console.error('[Kliny Sniper] Failed to parse snipe row:', err);
+                }
+            });
+            snipes.sort((a, b) => a.targetSend - b.targetSend);
+            return snipes;
+        }
+
+        // Scan table and overwrite the cache. Called once on load + on button click.
+        function scanTable() {
+            cachedSnipes = parseMemoRows();
+            const st = statusEl();
+            if (st) st.innerHTML = `<span style="color:#aaa">Scanned — ${cachedSnipes.length} snipe(s) found.</span>`;
+        }
+
+        // Build the overlay UI.
+        const overlay = document.createElement('div');
+        overlay.id = 'kliny-auto-overlay';
+        overlay.innerHTML = `
+            <div style="font-weight:bold;color:#fff;margin-bottom:6px">⚔ Kliny Auto-Sniper <span style="font-size:10px;color:#888">(automatic)</span></div>
+            <div id="kliny-auto-status" style="color:#aaa;font-size:11px">Waiting for page…</div>
+            <button id="kliny-rescan" style="margin-top:6px;padding:3px 10px;background:#333;color:#ccc;border:1px solid #666;border-radius:3px;cursor:pointer;font-size:11px">⟳ Re-scan</button>
+        `;
+        Object.assign(overlay.style, {
+            position: 'fixed', top: '60px', right: '16px',
+            background: '#1a1a1a', color: '#ccc',
+            border: '1px solid #555', borderRadius: '6px',
+            padding: '12px 16px', zIndex: '99999',
+            fontSize: '12px', fontFamily: 'monospace',
+            lineHeight: '1.8', boxShadow: '0 4px 16px rgba(0,0,0,.6)',
+            minWidth: '260px',
+        });
+        const statusEl = () => document.getElementById('kliny-auto-status');
+
+        const attachOverlay = () => {
+            if (!document.body) return;
+            document.body.appendChild(overlay);
+            document.getElementById('kliny-rescan').addEventListener('click', scanTable);
+            scanTable(); // initial scan
+        };
+        document.readyState === 'loading'
+            ? document.addEventListener('DOMContentLoaded', attachOverlay)
+            : attachOverlay();
+
+        function tick() {
+            const now    = getServerTime();
+            const snipes = cachedSnipes;
+            const st     = statusEl();
+
+            // Fire any snipe whose click-time has arrived.
+            for (const snipe of snipes) {
+                if (launched.has(snipe.targetSend)) continue;
+                const clickAt = snipe.targetSend - LEAD_MS;
+                if (now >= clickAt) {
+                    launched.add(snipe.targetSend);
+                    localStorage.setItem(SNIPE_KEY, JSON.stringify({
+                        arrival_ms: snipe.arr_ms,
+                        min_ms:     snipe.min_ms,
+                        max_ms:     snipe.max_ms,
+                        stored_at:  Date.now(),
+                    }));
+                    window.open(snipe.link.href, '_blank');
+                    if (st) st.innerHTML = `<span style="color:#4f4">✓ Launched snipe → ${toServerTimeStr(snipe.arr_ms)}</span>`;
+                    break; // one at a time; next tick handles the rest
+                }
+            }
+
+            // Show countdown to the next pending snipe.
+            const next = snipes.find(s => !launched.has(s.targetSend));
+            if (!next) {
+                if (st && !st.innerHTML.startsWith('<span style="color:#4f4">')) {
+                    st.textContent = 'No upcoming snipes in table.';
+                }
+                return;
+            }
+
+            const clickAt = next.targetSend - LEAD_MS;
+            const remMs   = Math.max(0, clickAt - now);
+            const remSend = Math.max(0, next.targetSend - now);
+            if (st && !st.innerHTML.startsWith('<span style="color:#4f4">✓ Launched')) {
+                st.innerHTML =
+                    `Next arrival: <b>${toServerTimeStr(next.arr_ms)}</b><br>` +
+                    `Auto-click in: <b style="color:#4f4">${(remMs / 1000).toFixed(1)}s</b>` +
+                    ` &nbsp;|&nbsp; sends in: ${(remSend / 1000).toFixed(1)}s`;
+            }
+        }
+
+        setInterval(tick, 100);
+    }
+
+    // ── 2. PLACE PAGE (screen=place, no try=confirm) — auto-click support ─────
+    else if (screen === 'place' && !tryParam) {
+        const data = loadStoredData();
+        if (!data) return;
+
+        const doSubmit = () => {
+            const btn = document.querySelector('input[name="support"]')
+                || document.querySelector('#command-data-form input[type="submit"]')
+                || document.querySelector('form input[type="submit"]');
+            if (btn) {
+                btn.click();
+            } else {
+                console.warn('[Kliny Sniper] Support button not found on place page');
+            }
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => setTimeout(doSubmit, 400));
+        } else {
+            setTimeout(doSubmit, 400);
+        }
+    }
+
+    // ── 3. CONFIRM PAGE (screen=place&try=confirm) — timing worker ────────────
+    else if (screen === 'place' && tryParam === 'confirm') {
+        const data = loadStoredData(/* consume */ true);
+        if (!data) return;
+
+        const { arrival_ms, min_ms, max_ms } = data;
+
+        const init = () => {
+            const confirmBtn = document.getElementById('troop_confirm_go')
+                || document.querySelector('#command-data-form input[type="submit"]')
+                || document.querySelector('input[type="submit"]');
+
+            if (!confirmBtn) {
+                console.error('[Kliny Sniper] Cannot find confirm button on try=confirm page');
+                return;
+            }
+
+            const gap_ms = max_ms - min_ms;
+            const targetSend = gap_ms > 1000
+                ? max_ms - 500
+                : min_ms + Math.round(gap_ms / 2);
+            const now = getServerTime();
+
+            const ui = showOverlay(targetSend, arrival_ms);
+
+            if (targetSend < now - 3000) {
+                ui.innerHTML = `<b style="color:#f66">⚠ Too late!<br>Send time was in the past.</b>`;
+                return;
+            }
+
+            launchWorker(targetSend, confirmBtn, ui);
+        };
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    function loadStoredData(consume = false) {
+        const raw = localStorage.getItem(SNIPE_KEY);
+        if (!raw) return null;
+        let data;
+        try { data = JSON.parse(raw); } catch { localStorage.removeItem(SNIPE_KEY); return null; }
+        if (Date.now() - data.stored_at > TTL_MS) {
+            localStorage.removeItem(SNIPE_KEY);
+            return null;
+        }
+        if (consume) localStorage.removeItem(SNIPE_KEY);
+        return data;
+    }
+
+    // ── Worker: tight 1 ms loop that fires confirmBtn at exactly targetSend ───
+    function launchWorker(targetSend, confirmBtn, uiEl) {
+        const src = `
+var st = 0, ping = 30, waitPing = false, done = false, ticks = 0;
+
+self.onmessage = function(e) {
+    var d = e.data;
+    if      (d.cmd === 'start') { st = d.t; loop(d.target); }
+    else if (d.cmd === 'time')  { st = d.t; }
+    else if (d.cmd === 'ping')  { ping = d.p; waitPing = false; }
+};
+
+function loop(target) {
+    setTimeout(function tick() {
+        if (done) return;
+        postMessage({ cmd: 'getTime' });
+        var rem = (target - ping) - st;
+        if (!waitPing && rem <= 20000 && rem >= 15000) {
+            waitPing = true;
+            postMessage({ cmd: 'getPing' });
+        }
+        if (rem <= 0) {
+            done = true;
+            postMessage({ cmd: 'fire' });
+            return;
+        }
+        ticks++;
+        if (ticks % 50 === 0) postMessage({ cmd: 'tick', rem: rem });
+        setTimeout(tick, 1);
+    }, 1);
+}
+        `;
+
+        const worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+
+        let pingCache = null;
+        function measurePing(cb) {
+            if (pingCache !== null) { cb(pingCache); return; }
+            let n = 0, sum = 0;
+            (function next() {
+                const t = Date.now();
+                const img = new Image();
+                img.onload = img.onerror = () => {
+                    sum += (Date.now() - t) * 0.3;
+                    if (++n >= 5) { pingCache = sum / n; cb(pingCache); }
+                    else setTimeout(next, 1000);
+                };
+                img.src = 'game.php?_kliny=' + Math.random();
+            })();
+        }
+
+        const cdEl = uiEl && uiEl.querySelector('#kliny-cd');
+
+        worker.postMessage({ cmd: 'start', target: targetSend, t: getServerTime() });
+
+        worker.onmessage = (e) => {
+            switch (e.data.cmd) {
+                case 'getTime':
+                    worker.postMessage({ cmd: 'time', t: getServerTime() });
+                    break;
+                case 'tick':
+                    if (cdEl) cdEl.textContent = (Math.max(0, e.data.rem) / 1000).toFixed(2) + 's';
+                    break;
+                case 'getPing':
+                    measurePing(p => worker.postMessage({ cmd: 'ping', p }));
+                    break;
+                case 'fire':
+                    confirmBtn.click();
+                    worker.terminate();
+                    if (uiEl) uiEl.innerHTML = '<div style="color:#4f4;font-size:14px;padding:4px">✓ Snipe sent!</div>';
+                    sessionStorage.setItem(CLOSE_KEY, '1');
+                    break;
+            }
+        };
+    }
+
+    // ── Overlay shown on try=confirm page ─────────────────────────────────────
+    function showOverlay(sendAt_ms, arrival_ms) {
+        const sendStr = toServerTimeStr(sendAt_ms);
+        const arrStr  = toServerTimeStr(arrival_ms);
+        const el = document.createElement('div');
+        el.innerHTML = `
+            <div style="font-weight:bold;color:#fff;margin-bottom:6px">⚔ Kliny Auto-Sniper</div>
+            Noble arrives: <b>${arrStr}</b> (server)<br>
+            Sending at: <b>${sendStr}</b> (server)<br>
+            Firing in: <span id="kliny-cd" style="color:#4f4;font-size:14px">…</span>
+        `;
+        Object.assign(el.style, {
+            position: 'fixed', top: '60px', right: '16px',
+            background: '#1a1a1a', color: '#ccc',
+            border: '1px solid #555', borderRadius: '6px',
+            padding: '12px 16px', zIndex: '99999',
+            fontSize: '12px', fontFamily: 'monospace',
+            lineHeight: '1.8', boxShadow: '0 4px 16px rgba(0,0,0,.6)',
+        });
+        document.body.appendChild(el);
+        return el;
+    }
+
+})();
