@@ -730,9 +730,9 @@
             <div class="kliny-field">
                 <label>Replacement (zast)</label>
                 <select id="kliny-zast">
-                    <option value="yes"${GM_getValue('kliny_zast','yes')==='yes' ? ' selected':''}>Yes</option>
-                    <option value="no"${GM_getValue('kliny_zast','yes')==='no' ? ' selected':''}>No</option>
-                    <option value="its_complicated"${GM_getValue('kliny_zast','yes')==='its_complicated' ? ' selected':''}>It's complicated</option>
+                    <option value="yes"${GM_getValue('kliny_zast','no')==='yes' ? ' selected':''}>Yes</option>
+                    <option value="no"${GM_getValue('kliny_zast','no')==='no' ? ' selected':''}>No</option>
+                    <option value="its_complicated"${GM_getValue('kliny_zast','no')==='its_complicated' ? ' selected':''}>It's complicated</option>
                 </select>
             </div>
 
@@ -798,6 +798,7 @@
 
             generateSnipes({
                 world,
+                game_base:       location.origin,
                 mode,
                 players,
                 black_out_hours: document.getElementById('kliny-blackout').value.trim(),
