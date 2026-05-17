@@ -43,7 +43,7 @@
     if (!isReqdef && !isCombined && !isMemo) return;
 
     // ── Settings (persisted via Tampermonkey storage) ─────────────────────────
-    let API_BASE    = GM_getValue('kliny_api_base',    'tribalwars-snipes.net');
+    let API_BASE    = GM_getValue('kliny_api_base',    'https://tribalwars-snipes.net');
     let API_KEY     = GM_getValue('kliny_api_key',     '');
     // Snipe-size overrides — sent with every attacks upload so the player
     // can customise them without touching the server web UI.
@@ -154,7 +154,8 @@
 
         document.getElementById('kliny-save-settings').addEventListener('click', (e) => {
             e.preventDefault(); e.stopPropagation();
-            API_BASE     = document.getElementById('kliny-base-input').value.replace(/\/$/, '');
+            API_BASE     = document.getElementById('kliny-base-input').value.trim().replace(/\/$/, '');
+            if (API_BASE && !/^https?:\/\//i.test(API_BASE)) API_BASE = 'https://' + API_BASE;
             API_KEY      = document.getElementById('kliny-key-input').value.trim();
             SNIPE_SMALL  = parseInt(document.getElementById('kliny-small-input').value,  10) || 0;
             SNIPE_MEDIUM = parseInt(document.getElementById('kliny-medium-input').value, 10) || 0;
