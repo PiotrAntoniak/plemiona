@@ -4,7 +4,19 @@
 // @version      5.0
 // @description  Every ~1 hour: run farma slajni script, Plan farms, Auto-Send All Farms
 // @author       You
-// @match        https://es100.guerrastribales.es/game.php*
+// @match        https://*.plemiona.pl/game.php*
+// @match        https://*.tribalwars.net/game.php*
+// @match        https://*.die-staemme.de/game.php*
+// @match        https://*.staemme.ch/game.php*
+// @match        https://*.tribalwars.nl/game.php*
+// @match        https://*.tribalwars.co.uk/game.php*
+// @match        https://*.tribalwars.us/game.php*
+// @match        https://*.tribalwars.com.pt/game.php*
+// @match        https://*.tribalwars.com.br/game.php*
+// @match        https://*.divokekmeny.cz/game.php*
+// @match        https://*.tribals.it/game.php*
+// @match        https://*.guerretribale.fr/game.php*
+// @match        https://*.guerrastribales.es/game.php*
 // @grant        GM_xmlhttpRequest
 // ==/UserScript==
 
