@@ -1,0 +1,134 @@
+// ==UserScript==
+// @name         Instant Labeling Auto-Refresh
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Re-runs InstantLabeling.js every 10 minutes on incoming attacks pages
+// @author       You
+// @match        https://*.plemiona.pl/game.php*
+// @match        https://*.tribalwars.net/game.php*
+// @match        https://*.die-staemme.de/game.php*
+// @match        https://*.staemme.ch/game.php*
+// @match        https://*.tribalwars.nl/game.php*
+// @match        https://*.tribalwars.co.uk/game.php*
+// @match        https://*.tribalwars.us/game.php*
+// @match        https://*.tribalwars.com.pt/game.php*
+// @match        https://*.tribalwars.com.br/game.php*
+// @match        https://*.divokekmeny.cz/game.php*
+// @match        https://*.tribals.it/game.php*
+// @match        https://*.guerretribale.fr/game.php*
+// @match        https://*.guerrastribales.es/game.php*
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // Random interval: 15 min ± up to 2 min  →  [13, 17] minutes
+    function randomIntervalMs() {
+        return (15 + (Math.random() * 4 - 2)) * 60 * 1000;
+    }
+    const SCRIPT_URL  = 'https://media.innogamescdn.com/com_DS_PL/skrypty/InstantLabeling.js';
+
+    const params = new URLSearchParams(location.search);
+    const screen = params.get('screen');
+    const mode   = params.get('mode');
+
+    // Only run on incoming attacks pages.
+    // TW uses screen=overview_villages&mode=incomings  OR  screen=incomings (world-specific).
+    const isIncomingsPage =
+        (screen === 'overview_villages' && mode === 'incomings') ||
+        screen === 'incomings';
+
+    if (!isIncomingsPage) return;
+
+    const FIRED_KEY = 'kliny_il_fired_at'; // sessionStorage: timestamp of last fire
+
+    function runScript() {
+        if (typeof $ === 'undefined') {
+            console.warn('[InstantLabeling] jQuery not available yet, retrying in 1s…');
+            setTimeout(runScript, 1000);
+            return;
+        }
+        // Prevent running again if already fired in the last 30 s
+        // (guards against reload loops caused by InstantLabeling.js itself).
+        const last = parseInt(sessionStorage.getItem(FIRED_KEY) || '0', 10);
+        if (Date.now() - last < 30_000) {
+            console.log('[InstantLabeling] Skipping – fired less than 30 s ago.');
+            return;
+        }
+        sessionStorage.setItem(FIRED_KEY, String(Date.now()));
+        console.log('[InstantLabeling] Loading InstantLabeling.js…');
+        $.getScript(SCRIPT_URL);
+    }
+
+    // ── Overlay / countdown UI ────────────────────────────────────────────────
+    function createOverlay() {
+        const el = document.createElement('div');
+        el.id = 'kliny-il-overlay';
+        el.innerHTML = `
+            <div style="font-weight:bold;color:#fff;margin-bottom:6px">🏷 Instant Labeling</div>
+            Next refresh in: <span id="kliny-il-cd" style="color:#4f4;font-size:14px">10:00</span>
+            <button id="kliny-il-now" style="
+                display:block;margin-top:8px;padding:4px 10px;
+                background:#444;color:#eee;border:1px solid #666;
+                border-radius:4px;cursor:pointer;font-size:11px;">
+                ▶ Run now
+            </button>
+        `;
+        Object.assign(el.style, {
+            position:     'fixed',
+            bottom:       '16px',
+            right:        '16px',
+            background:   '#1a1a1a',
+            color:        '#ccc',
+            border:       '1px solid #555',
+            borderRadius: '6px',
+            padding:      '10px 14px',
+            zIndex:       '99999',
+            fontSize:     '12px',
+            fontFamily:   'monospace',
+            lineHeight:   '1.8',
+            boxShadow:    '0 4px 16px rgba(0,0,0,.6)',
+        });
+        document.body.appendChild(el);
+        return el;
+    }
+
+    // ── Init ──────────────────────────────────────────────────────────────────
+    const init = () => {
+        createOverlay();
+
+        // Fire immediately on page load (guarded by 30 s debounce in runScript).
+        runScript();
+
+        const cdEl = document.getElementById('kliny-il-cd');
+        let remaining = randomIntervalMs();
+
+        // Single setInterval drives both the countdown display and the periodic fire.
+        const ticker = setInterval(() => {
+            remaining -= 1000;
+            if (cdEl) {
+                const m = String(Math.floor(remaining / 60000)).padStart(2, '0');
+                const s = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+                cdEl.textContent = `${m}:${s}`;
+            }
+            if (remaining <= 0) {
+                remaining = randomIntervalMs();
+                runScript();
+            }
+        }, 1000);
+
+        document.getElementById('kliny-il-now').addEventListener('click', () => {
+            // Reset the timer to a new random interval from now.
+            remaining = randomIntervalMs();
+            runScript();
+        });
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+})();
