@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TW Resource Production Calculator
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  Calculates hourly resource production from building levels in the village overview, respecting world speed, village bonuses (30% all resources, 100% wood/clay/iron)
 // @author       TW Helper
 // @match        https://*.guerrastribales.es/game.php*
@@ -62,8 +62,12 @@
     // Supports:
     //   bonus_icon_8 → "30% más de producción en todos los recursos"  (all ×1.3)
     //   bonus_icon_1 → "100% más de producción de madera"              (wood ×2)
-    //   bonus_icon_2 → "100% más de producción de barro/arcilla"       (clay ×2)
+    //   bonus_icon_2 → "100% más de producción de barro/arcilla/barrera" (clay ×2)
     //   bonus_icon_3 → "100% más de producción de hierro"              (iron ×2)
+    //
+    // FIX v1.6: Spanish TW uses "barrera" as the building name for the clay pit.
+    // The old code only checked for "barro", "clay", "arcilla" — missing "barrera" —
+    // so villages with bonus_icon_2 had their clay multiplier silently skipped.
     function parseBonusIcons(cell) {
         const bonus = { wood: 1.0, clay: 1.0, iron: 1.0 };
         if (!cell) return bonus;
@@ -72,11 +76,20 @@
             const title = (icon.getAttribute('data-title') || '').toLowerCase();
             if (title.includes('30%') && (title.includes('todos') || title.includes('all'))) {
                 bonus.wood *= 1.3; bonus.clay *= 1.3; bonus.iron *= 1.3;
-            } else if (title.includes('100%') && (title.includes('madera') || title.includes('wood') || title.includes('timber'))) {
+            } else if (title.includes('100%') && (
+                title.includes('madera') || title.includes('wood') || title.includes('timber')
+            )) {
                 bonus.wood *= 2.0;
-            } else if (title.includes('100%') && (title.includes('barro') || title.includes('clay') || title.includes('arcilla'))) {
+            } else if (title.includes('100%') && (
+                title.includes('barro')   ||   // generic Spanish for clay/mud
+                title.includes('clay')    ||   // English
+                title.includes('arcilla') ||   // Spanish for clay (material)
+                title.includes('barrera')      // FIX: Spanish TW building name for clay pit
+            )) {
                 bonus.clay *= 2.0;
-            } else if (title.includes('100%') && (title.includes('hierro') || title.includes('iron'))) {
+            } else if (title.includes('100%') && (
+                title.includes('hierro') || title.includes('iron')
+            )) {
                 bonus.iron *= 2.0;
             }
         });
@@ -237,6 +250,8 @@
             const ironLv = getLevel(row, 'b_iron');
 
             // Bonus icons in the name cell
+            // FIX v1.6: Search the entire row for bonus icons, not just td.nowrap,
+            // to handle cases where icons are nested inside <a> tags within the cell.
             const nameCell = row.querySelector('td.nowrap');
             const bonus = parseBonusIcons(nameCell);
 
