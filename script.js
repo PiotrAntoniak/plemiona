@@ -434,7 +434,7 @@ window.FarmGod.Main = (function (Library, Translation) {
   // FIX: human-like randomized delay — more natural than a fixed 250ms interval
   // If the origin village name contains "pollo" (case-insensitive), add 1 extra second.
   const humanDelay = (villageName = '') => {
-    const base = 360 + Math.floor(Math.random() * 150); // 360–510ms
+    const base = 250 + Math.floor(Math.random() * 150); // 360–510ms
     const bonus = /(pollo|cock)/i.test(villageName) ? 1000 : 0;
     return base + bonus;
   };
