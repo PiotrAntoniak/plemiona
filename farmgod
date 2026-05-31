@@ -45,7 +45,7 @@
     function run() {
         // Step 1: execute the bookmark script
         log('Executing farma slajni script…');
-        $.getScript('https://cdn.jsdelivr.net/gh/PiotrAntoniak/plemiona@main/script.js');
+        $.getScript('https://cdn.jsdelivr.net/gh/PiotrAntoniak/plemiona@main/script.js'); #https://higamy.github.io/TW/Scripts/Approved/FarmGodCopy.js
 
         // Step 2: wait 10s, then click Plan farms
         setTimeout(() => {
