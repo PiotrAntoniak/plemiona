@@ -435,7 +435,7 @@ window.FarmGod.Main = (function (Library, Translation) {
   // If the origin village name contains "pollo" (case-insensitive), add 1 extra second.
   const humanDelay = (villageName = '') => {
     const base = 250 + Math.floor(Math.random() * 150); // 360–510ms
-    const bonus = /(pollo|cock)/i.test(villageName) ? 1000 : 0;
+    const bonus = /(pollllllo|cockkkkkkkkkk)/i.test(villageName) ? 1000 : 0;
     return base + bonus;
   };
 
