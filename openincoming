@@ -1,0 +1,110 @@
+// ==UserScript==
+// @name         Open Incomings Tab
+// @namespace    http://tampermonkey.net/
+// @version      1.6
+// @description  Every 7±2 min opens incomings tab which closes itself, shows countdown overlay
+// @author       You
+// @match        https://es100.guerrastribales.es/game.php*
+// @grant        GM_openInTab
+// @grant        GM_closeTab
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const INCOMINGS_URL = 'https://es100.guerrastribales.es/game.php?screen=overview_villages&mode=incomings&type=unignored&subtype=attacks';
+
+    const href   = location.href;
+    const params = new URLSearchParams(location.search);
+
+    const isMarket    = href.includes('screen=market') && href.includes('mode=traders');
+    const isIncomings = href.includes('screen=overview_villages') && href.includes('mode=incomings');
+
+    console.log('[IL-Watcher] isMarket:', isMarket, '| isIncomings:', isIncomings);
+
+    // ── INCOMINGS TAB: close after 15s ────────────────────────────────────────
+    if (isIncomings) {
+        console.log('[IL-Watcher] Incomings tab detected, closing in 15s…');
+        setTimeout(() => {
+            console.log('[IL-Watcher] Closing incomings tab.');
+            GM_closeTab();
+        }, 15_000);
+        return;
+    }
+
+    // ── MARKET TAB: countdown + open ─────────────────────────────────────────
+    if (!isMarket) return;
+
+    console.log('[IL-Watcher] Market tab detected, starting watcher…');
+
+    function randomIntervalMs() {
+        return (7 + (Math.random() * 4 - 2)) * 60 * 1000;
+    }
+
+    function createOverlay() {
+        const el = document.createElement('div');
+        el.id = 'kliny-oi-overlay';
+        el.innerHTML = `
+            <div style="font-weight:bold;color:#fff;margin-bottom:6px">👁 Incomings Watcher</div>
+            Next open in: <span id="kliny-oi-cd" style="color:#4f4;font-size:14px">--:--</span>
+            <button id="kliny-oi-now" style="
+                display:block;margin-top:8px;padding:4px 10px;
+                background:#444;color:#eee;border:1px solid #666;
+                border-radius:4px;cursor:pointer;font-size:11px;">
+                ▶ Open now
+            </button>
+        `;
+        Object.assign(el.style, {
+            position:     'fixed',
+            bottom:       '16px',
+            right:        '16px',
+            background:   '#1a1a1a',
+            color:        '#ccc',
+            border:       '1px solid #555',
+            borderRadius: '6px',
+            padding:      '10px 14px',
+            zIndex:       '99999',
+            fontSize:     '12px',
+            fontFamily:   'monospace',
+            lineHeight:   '1.8',
+            boxShadow:    '0 4px 16px rgba(0,0,0,.6)',
+        });
+        document.body.appendChild(el);
+    }
+
+    function startCountdown() {
+        const cdEl = document.getElementById('kliny-oi-cd');
+        let remaining = randomIntervalMs();
+
+        function openAndReset() {
+            console.log('[IL-Watcher] Opening incomings tab…');
+            GM_openInTab(INCOMINGS_URL, { active: false, insert: true });
+            remaining = randomIntervalMs();
+            console.log(`[IL-Watcher] Next open in ${(remaining / 60000).toFixed(1)} min`);
+        }
+
+        const ticker = setInterval(() => {
+            remaining -= 1000;
+            if (cdEl) {
+                const m = String(Math.floor(remaining / 60000)).padStart(2, '0');
+                const s = String(Math.floor((remaining % 60000) / 1000)).padStart(2, '0');
+                cdEl.textContent = `${m}:${s}`;
+            }
+            if (remaining <= 0) openAndReset();
+        }, 1000);
+
+        document.getElementById('kliny-oi-now').addEventListener('click', openAndReset);
+    }
+
+    // Don't wait for load event — just run when DOM is ready
+    if (document.body) {
+        createOverlay();
+        startCountdown();
+    } else {
+        document.addEventListener('DOMContentLoaded', () => {
+            createOverlay();
+            startCountdown();
+        });
+    }
+
+})();
