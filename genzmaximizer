@@ -1,0 +1,208 @@
+// ==UserScript==
+// @name         gen z maximiser
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Maximum brain rot. No hiding. Full volume.
+// @author       You
+// @match        https://*.plemiona.pl/*
+// @match        https://*.tribalwars.net/*
+// @match        https://*.die-staemme.de/*
+// @match        https://*.staemme.ch/*
+// @match        https://*.tribalwars.nl/*
+// @match        https://*.tribalwars.co.uk/*
+// @match        https://*.tribalwars.us/*
+// @match        https://*.tribalwars.com.pt/*
+// @match        https://*.tribalwars.com.br/*
+// @match        https://*.divokekmeny.cz/*
+// @match        https://*.tribals.it/*
+// @match        https://*.guerretribale.fr/*
+// @match        https://*.guerrastribales.es/*
+// @grant        GM_addStyle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ── Videos ────────────────────────────────────────────────────────────────
+    const LEFT_VIDEOS = [
+        'dQw4w9WgXcQ',  // Never Gonna Give You Up
+        'QH2-TGUlwu4',  // Nyan Cat
+        'k85mRPqvMbE',  // Crazy Frog
+    ];
+    const RIGHT_VIDEOS = [
+        '9bZkp7q19f0',  // Gangnam Style
+        'jofNR_WkoCE',  // What Does The Fox Say
+        'SHvhps47Lmc',  // We Are Number One
+    ];
+
+    // ── Brain rot vocabulary ──────────────────────────────────────────────────
+    const WORDS = [
+        'OHIO', 'SKIBIDI', 'RIZZ', 'NO CAP', 'FANUM TAX', 'SIGMA',
+        'GOATED', 'SLAY', 'NPC', 'COPIUM', 'BASED', 'GYATT', 'BUSSIN',
+        'DELULU', 'SUSSY', 'POGGERS', 'RATIO', 'W', 'L', 'LOWKEY',
+        '💀', '🗿', '🔥', '💯', '🥶', '😤', '⚠️', '🦅', '🍷🗿',
+        'REAL', 'FRFR', 'ON GOD', 'SHEEEESH', 'YAPPING', 'GLAZING',
+        'MEWING', 'LOOKSMAXX', 'GIGA CHAD', 'BING CHILLING',
+    ];
+
+    let blasted = false;
+
+    // ── YouTube embed URL ─────────────────────────────────────────────────────
+    function embedUrl(id, mute) {
+        return `https://www.youtube.com/embed/${id}?autoplay=1&loop=1&playlist=${id}&mute=${mute ? 1 : 0}&controls=0&modestbranding=1&rel=0`;
+    }
+
+    // ── Build one side column ─────────────────────────────────────────────────
+    function createColumn(side, videos) {
+        const col = document.createElement('div');
+        col.id = `br-col-${side}`;
+        Object.assign(col.style, {
+            position:      'fixed',
+            top:           '0',
+            [side]:        '0',
+            width:         '300px',
+            height:        '100vh',
+            zIndex:        '99990',
+            display:       'flex',
+            flexDirection: 'column',
+            overflow:      'hidden',
+        });
+
+        videos.forEach((id, i) => {
+            const wrap = document.createElement('div');
+            wrap.className = 'br-wrap';
+            wrap.dataset.vid = id;
+            wrap.style.animationDelay = `${i * 0.18}s`;
+            Object.assign(wrap.style, {
+                flex:       '1',
+                position:   'relative',
+                boxSizing:  'border-box',
+                border:     '4px solid red',
+            });
+
+            const iframe = document.createElement('iframe');
+            iframe.src     = embedUrl(id, true);
+            iframe.allow   = 'autoplay; encrypted-media';
+            iframe.setAttribute('allowfullscreen', '');
+            Object.assign(iframe.style, {
+                width:   '100%',
+                height:  '100%',
+                border:  'none',
+                display: 'block',
+            });
+
+            wrap.appendChild(iframe);
+            col.appendChild(wrap);
+        });
+
+        return col;
+    }
+
+    // ── Reload all iframes with sound (post-user-gesture) ─────────────────────
+    function blast() {
+        if (blasted) return;
+        blasted = true;
+        document.querySelectorAll('.br-wrap').forEach(wrap => {
+            const iframe  = wrap.querySelector('iframe');
+            iframe.src    = embedUrl(wrap.dataset.vid, false);
+        });
+    }
+
+    // ── Floating brain rot words ──────────────────────────────────────────────
+    function spawnWord() {
+        const word  = WORDS[Math.floor(Math.random() * WORDS.length)];
+        const el    = document.createElement('div');
+        el.textContent = word;
+        el.className   = 'br-word';
+        Object.assign(el.style, {
+            position:   'fixed',
+            left:       `${Math.random() * window.innerWidth}px`,
+            top:        `${Math.random() * (window.innerHeight - 60)}px`,
+            fontSize:   `${20 + Math.random() * 40}px`,
+            fontWeight: '900',
+            fontFamily: 'Impact, "Arial Black", sans-serif',
+            color:      `hsl(${Math.floor(Math.random() * 360)},100%,60%)`,
+            textShadow: '2px 2px 0 #000, -1px -1px 0 #000',
+            zIndex:     '99997',
+            pointerEvents: 'none',
+            letterSpacing: '1px',
+            animationDuration: `${0.3 + Math.random() * 0.4}s`,
+        });
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 2500 + Math.random() * 2000);
+    }
+
+    // ── BLAST button ──────────────────────────────────────────────────────────
+    const blastBtn = document.createElement('button');
+    blastBtn.id          = 'br-blast-btn';
+    blastBtn.textContent = '🔊 BLAST';
+    Object.assign(blastBtn.style, {
+        position:    'fixed',
+        bottom:      '16px',
+        left:        '50%',
+        transform:   'translateX(-50%)',
+        zIndex:      '999999',
+        padding:     '10px 30px',
+        fontSize:    '20px',
+        fontWeight:  '900',
+        fontFamily:  'Impact, sans-serif',
+        background:  '#ff0000',
+        color:       '#ffffff',
+        border:      '3px solid #ffff00',
+        borderRadius:'6px',
+        cursor:      'pointer',
+        letterSpacing: '3px',
+    });
+    blastBtn.addEventListener('click', () => {
+        blast();
+        blastBtn.textContent = '🔊 BLASTING 🔊';
+        blastBtn.style.background  = '#00ff00';
+        blastBtn.style.color       = '#000000';
+        blastBtn.style.borderColor = '#ff00ff';
+        blastBtn.style.animationDuration = '0.1s';
+    });
+
+    // ── CSS ───────────────────────────────────────────────────────────────────
+    GM_addStyle(`
+        @keyframes br-rainbow {
+            0%   { border-color: #ff0000; box-shadow: 0 0 8px #ff0000; }
+            14%  { border-color: #ff7700; box-shadow: 0 0 8px #ff7700; }
+            28%  { border-color: #ffff00; box-shadow: 0 0 8px #ffff00; }
+            42%  { border-color: #00ff00; box-shadow: 0 0 8px #00ff00; }
+            57%  { border-color: #00ffff; box-shadow: 0 0 8px #00ffff; }
+            71%  { border-color: #0000ff; box-shadow: 0 0 8px #0000ff; }
+            85%  { border-color: #ff00ff; box-shadow: 0 0 8px #ff00ff; }
+            100% { border-color: #ff0000; box-shadow: 0 0 8px #ff0000; }
+        }
+        .br-wrap {
+            animation: br-rainbow 0.5s linear infinite;
+        }
+
+        @keyframes br-wobble {
+            0%   { transform: rotate(-8deg) scale(1.00); }
+            25%  { transform: rotate(6deg)  scale(1.12); }
+            50%  { transform: rotate(-4deg) scale(0.95); }
+            75%  { transform: rotate(9deg)  scale(1.08); }
+            100% { transform: rotate(-8deg) scale(1.00); }
+        }
+        .br-word {
+            animation: br-wobble 0.4s ease-in-out infinite;
+        }
+
+        @keyframes br-btn-pulse {
+            from { transform: translateX(-50%) scale(1);    box-shadow: 0 0 12px red; }
+            to   { transform: translateX(-50%) scale(1.10); box-shadow: 0 0 40px red, 0 0 80px orange; }
+        }
+        #br-blast-btn {
+            animation: br-btn-pulse 0.25s ease-in-out infinite alternate;
+        }
+    `);
+
+    // ── Inject ────────────────────────────────────────────────────────────────
+    document.body.appendChild(createColumn('left',  LEFT_VIDEOS));
+    document.body.appendChild(createColumn('right', RIGHT_VIDEOS));
+    document.body.appendChild(blastBtn);
+
+    setInterval(spawnWord, 450);
+
+})();
