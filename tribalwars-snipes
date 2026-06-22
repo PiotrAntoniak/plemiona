@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Kliny Uploader
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Upload TW attacks & army overview to a local Kliny instance
 // @author       You
 // @match        https://*.plemiona.pl/*
@@ -506,8 +506,6 @@
     `);
 
     // ── Memo page: fetch attacked players for tribe picker ─────────────────────
-    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
     function fetchAttackedPlayers(callback) {
         GM_xmlhttpRequest({
             method: 'GET',
@@ -523,69 +521,7 @@
         });
     }
 
-    // ── Memo page: show results modal ─────────────────────────────────────────
-    // ── Memo page: auto-write notes into TW note tabs ────────────────────────
-    // TW notes UI (screen=memo):
-    //   1. Click "+" → new tab created and selected
-    //   2. Click "Editar" (locale-dependent) → textarea appears
-    //   3. Fill textarea
-    //   4. Click "Guardar" / "Zapisz" / "Save" etc.
-    async function writeSingleNote(content) {
-        // Step 1 – click "+" and wait for Memo.selectedTab to update
-        const addBtn = document.querySelector('#memo-add-tab-button a');
-        if (!addBtn) return 'Could not find the "+" button (#memo-add-tab-button a)';
-
-        const oldTabId = (typeof Memo !== 'undefined') ? Memo.selectedTab : null;
-        addBtn.click();
-
-        // Poll up to 2 s for the new tab to be registered
-        let elapsed = 0;
-        while (elapsed < 2000) {
-            await sleep(100);
-            elapsed += 100;
-            if (typeof Memo !== 'undefined' && Memo.selectedTab && Memo.selectedTab !== oldTabId) break;
-        }
-        const tabId = (typeof Memo !== 'undefined') ? Memo.selectedTab : null;
-        if (!tabId || tabId === oldTabId) return 'Timed out waiting for new tab to be created';
-
-        // Step 2 – click Edit link (CSS class a.edit_link — locale-agnostic)
-        const editLink = document.querySelector('#memo_' + tabId + ' a.edit_link');
-        if (!editLink) return 'Could not find a.edit_link for tab ' + tabId;
-        editLink.click();
-        await sleep(700);
-
-        // Step 3 – fill textarea (identified by TW's own id="message_TABID")
-        const ta = document.getElementById('message_' + tabId);
-        if (!ta) return 'Could not find #message_' + tabId + ' textarea';
-        ta.value = content;
-        ta.dispatchEvent(new Event('input',  { bubbles: true }));
-        ta.dispatchEvent(new Event('change', { bubbles: true }));
-
-        // Step 4 – click Save (TW's own id="submit_memo_TABID")
-        const saveBtn = document.getElementById('submit_memo_' + tabId);
-        if (!saveBtn) return 'Could not find #submit_memo_' + tabId;
-        saveBtn.click();
-        await sleep(500);
-
-        return null; // null = success
-    }
-
-    async function writeNotesToMemo(notes, statusEl) {
-        for (let i = 0; i < notes.length; i++) {
-            statusEl.style.color = '#aaa';
-            statusEl.textContent = `Writing note ${i + 1} of ${notes.length} to TW…`;
-            const err = await writeSingleNote(notes[i]);
-            if (err) {
-                statusEl.style.color = '#f66';
-                statusEl.textContent = `Note ${i + 1} failed: ${err}`;
-                return;
-            }
-            await sleep(300);
-        }
-        statusEl.style.color = '#2a7';
-        statusEl.textContent = `✓ ${notes.length} note(s) written to TW`;
-    }
-
+    // ── Memo page: show results modal (copy-only, no auto-write) ─────────────
     function snipesToCsv(snipes) {
         if (!snipes || !snipes.length) return '';
         const headers = Object.keys(snipes[0]);
@@ -644,7 +580,9 @@
             if (csvHref) URL.revokeObjectURL(csvHref);
             overlay.remove();
         });
-        overlay.addEventListener('click', e => { if (e.target === overlay) { if (csvHref) URL.revokeObjectURL(csvHref); overlay.remove(); } });
+        overlay.addEventListener('click', e => {
+            if (e.target === overlay) { if (csvHref) URL.revokeObjectURL(csvHref); overlay.remove(); }
+        });
     }
 
     // ── Memo page: generate snipes ────────────────────────────────────────────
@@ -671,12 +609,8 @@
                     if (json.success) {
                         statusEl.style.color = '#888';
                         statusEl.textContent = '';
-                        // Show modal immediately so notes are visible/copyable,
-                        // then auto-write each note into a new TW note tab
+                        // Show popup with copy buttons only — no auto-write to TW notes
                         showSnipeResults(json);
-                        if (json.notes && json.notes.length > 0) {
-                            writeNotesToMemo(json.notes, statusEl);
-                        }
                     } else {
                         const msg = apiError(resp);
                         statusEl.textContent = msg;
