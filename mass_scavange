@@ -5,7 +5,8 @@
 // @description  Auto mass scavenging with retry + earliest return logic
 // @author       You
 // @match        https://es100.guerrastribales.es/game.php?village=*&screen=place&mode=scavenge_mass
-// @grant        none
+// @match        https://*.plemiona.pl/game.php?village=*&screen=place&mode=scavenge_mass
+
 // ==/UserScript==
 
 (function () {
@@ -27,7 +28,7 @@
     const KEY_ATTEMPTED            = 'tw_mass_scav_attempted';
 
     const REFRESH_URL =
-        'https://es100.guerrastribales.es/game.php?village=2263&screen=place&mode=scavenge_mass';
+        'https://pl230.plemiona.pl/game.php?village=2299&screen=place&mode=scavenge_mass';
 
     // ─────────────────────────────────────────────────────────────────────────────
 
