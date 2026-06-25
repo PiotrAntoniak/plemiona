@@ -5,6 +5,7 @@
 // @description  Escape bot � fill units, countdown, fire attack at exact millisecond
 // @author       You
 // @match        https://*.guerrastribales.es/game.php?*screen=place*
+// @match        https://*.plemiona.pl/game.php?*screen=place*
 // ==/UserScript==
 
 (function () {
