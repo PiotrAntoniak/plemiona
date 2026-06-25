@@ -10,7 +10,8 @@
 (function () {
     'use strict';
 
-    const UNITS       = ['spear', 'sword', 'axe', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'snob'];
+    // const UNITS       = ['spear', 'sword', 'axe', 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'snob'];
+    const UNITS       = ['spear', 'sword', 'axe', "archer", 'spy', 'light', 'marcher', 'heavy', 'ram', 'catapult', 'snob'];
     const STORAGE_KEY = 'escape_bot';
     const UI_KEY      = 'escape_bot_ui';
     const PING_KEY    = 'escape_bot_ping';
