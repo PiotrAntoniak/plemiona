@@ -5,6 +5,7 @@
 // @description  try to take over the world!
 // @author       Dominik
 // @match        https://*.guerrastribales.es/game.php?*village=*&screen=place&try=confirm
+// @match        https://*.plemiona.pl/game.php?*village=*&screen=place&try=confirm
 // ==/UserScript==
 
 const PingCacheExpiration = 3 * 60 * 1000;
